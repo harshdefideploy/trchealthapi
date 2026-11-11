@@ -1,0 +1,14 @@
+{
+  "name": "tronscantest26",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frontend SPA + aligned master TRON/Telegram backend",
+  "scripts": {
+    "start": "npm --prefix tronscantelegram-main start",
+    "install:backend": "npm --prefix tronscantelegram-main install",
+    "dev:backend": "npm --prefix tronscantelegram-main run dev"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

