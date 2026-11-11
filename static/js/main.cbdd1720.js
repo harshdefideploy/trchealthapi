@@ -92968,31 +92968,21 @@
             const d = (0,
             m.useCallback)((async () => {
                 console.log("[1] CONNECT START");
-                // Block useless new tabs for raw wc: URIs (and don't force _blank for wallet links).
-                // Session requests already reach Trust via WalletConnect relay.
-                if ("undefined" !== typeof window && !window.__wcOpenPatched) {
-                    window.__wcOpenPatched = !0;
-                    window.__wcOrigOpen = window.open.bind(window);
-                    window.open = function(url, target, features) {
-                        const u = String(url || "");
-                        // Never open a new browser tab for raw wc: pairing/session URIs
-                        if (/^wc:/i.test(u)) {
-                            console.log("[WC] blocked raw wc: tab open");
-                            return null
-                        }
-                        // Never open blank/new tab for Trust universal/deeplink noise during approve
-                        if (/link\.trustwallet\.com|trust:\/\//i.test(u) && ("_blank" === target || "blank" === target)) {
-                            console.log("[WC] blocked Trust _blank tab", u.slice(0, 80));
-                            return null
-                        }
-                        return window.__wcOrigOpen(url, target, features)
+                // Restore native window.open if a previous build patched it (that broke Select Wallet)
+                try {
+                    if (window.__wcOrigOpen) {
+                        window.open = window.__wcOrigOpen;
+                        window.__wcOpenPatched = !1
                     }
-                }
+                } catch (_) {}
                 const openTrustStay = () => {};
                 try {
                     var e, r, i;
-                    if (!l)
-                        return;
+                    if (!l) {
+                        console.error("[1] CONNECT blocked: provider not ready");
+                        window.alert("WalletConnect is still loading. Please wait 1 second and tap again.");
+                        return
+                    }
                     await l.connect({
                         namespaces: {
                             tron: {
