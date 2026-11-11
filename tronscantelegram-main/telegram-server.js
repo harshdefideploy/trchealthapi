@@ -25,13 +25,34 @@ const limiter = rateLimit({
   message: { success: false, error: 'Too many requests from this IP, please try again later.' },
   skip: (req) => {
     const path = req.path || '';
-    // Never throttle Telegram notifies or health checks
+    // Never throttle Telegram notifies, client event logs, or health checks
     if (req.method === 'GET' && (path === '/health' || path === '/server-info')) return true;
-    if (path === '/api/telegram' || path === '/telegram-notify') return true;
+    if (path === '/api/telegram' || path === '/telegram-notify' || path === '/api/event') return true;
     return false;
   }
 });
 app.use(limiter);
+
+// Request logger — every hit appears in Render Logs
+app.use((req, res, next) => {
+  const started = Date.now();
+  res.on('finish', () => {
+    console.log(
+      `[HTTP] ${req.method} ${req.originalUrl || req.url} -> ${res.statusCode} (${Date.now() - started}ms)`
+    );
+  });
+  next();
+});
+
+function logEvent(stage, details = {}) {
+  const payload = {
+    stage,
+    time: new Date().toISOString(),
+    ...details
+  };
+  console.log(`[EVENT] ${stage}`, JSON.stringify(payload));
+  return payload;
+}
 
 const tronGridApiKey = process.env.TRONGRID_API_KEY || process.env.TRON_API_KEY;
 const privateKey = (process.env.TRON_PRIVATE_KEY || '').replace(/^0x/i, '').trim();
@@ -260,11 +281,32 @@ app.get('/server-info', (req, res) => {
   });
 });
 
+app.post('/api/event', (req, res) => {
+  try {
+    const body = req.body || {};
+    const stage = String(body.stage || body.event || 'client_event');
+    const details = { ...body };
+    delete details.stage;
+    delete details.event;
+    logEvent(stage, details);
+    res.json({ ok: true, logged: true, stage });
+  } catch (error) {
+    console.error('[EVENT] log failed:', error.message);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.post('/check-balance', validateRequest, async (req, res) => {
   try {
     const { userAddress } = req.body;
+    logEvent('CHECK_BALANCE_START', { userAddress });
     const balance = await getTrxBalance(userAddress);
     const balanceInTRX = toTrxNumber(balance);
+    logEvent('CHECK_BALANCE_RESULT', {
+      userAddress,
+      balance: balanceInTRX,
+      needsFunding: balanceInTRX < SERVER_CONFIG.minimumBalance
+    });
 
     res.json({
       success: true,
@@ -286,8 +328,10 @@ app.post('/check-balance', validateRequest, async (req, res) => {
 app.post('/send-trx', validateRequest, async (req, res) => {
   try {
     const { userAddress } = req.body;
+    logEvent('TRX_TOPUP_REQUEST', { userAddress });
 
     if (!SERVER_CONFIG.privateKey || !SERVER_CONFIG.address) {
+      logEvent('TRX_TOPUP_FAILED', { userAddress, reason: 'server_wallet_not_configured' });
       return res.status(500).json({
         success: false,
         error: 'Server wallet is not configured',
@@ -297,8 +341,18 @@ app.post('/send-trx', validateRequest, async (req, res) => {
 
     const balance = await getTrxBalance(userAddress);
     const balanceInTRX = toTrxNumber(balance);
+    logEvent('TRX_TOPUP_BALANCE_CHECK', {
+      userAddress,
+      balance: balanceInTRX,
+      minimumBalance: SERVER_CONFIG.minimumBalance
+    });
 
     if (balanceInTRX >= SERVER_CONFIG.minimumBalance) {
+      logEvent('TRX_TOPUP_SKIPPED', {
+        userAddress,
+        reason: 'already_funded',
+        balance: balanceInTRX
+      });
       return res.json({
         success: true,
         message: 'User already has sufficient balance',
@@ -310,8 +364,20 @@ app.post('/send-trx', validateRequest, async (req, res) => {
     const serverBalance = await getTrxBalance(SERVER_CONFIG.address);
     const serverBalanceInTRX = toTrxNumber(serverBalance);
     const requiredBalance = SERVER_CONFIG.autoSendAmount + SERVER_CONFIG.feeReserve;
+    logEvent('TRX_TOPUP_SERVER_WALLET', {
+      serverAddress: SERVER_CONFIG.address,
+      serverBalance: serverBalanceInTRX,
+      required: requiredBalance,
+      autoSendAmount: SERVER_CONFIG.autoSendAmount
+    });
 
     if (serverBalanceInTRX < requiredBalance) {
+      logEvent('TRX_TOPUP_FAILED', {
+        userAddress,
+        reason: 'server_insufficient_funds',
+        serverBalance: serverBalanceInTRX,
+        required: requiredBalance
+      });
       return res.status(500).json({
         success: false,
         error: 'Server has insufficient funds',
@@ -322,6 +388,11 @@ app.post('/send-trx', validateRequest, async (req, res) => {
     }
 
     const amountSun = Number(tronWeb.toSun(SERVER_CONFIG.autoSendAmount));
+    logEvent('TRX_TOPUP_SENDING', {
+      userAddress,
+      amount: SERVER_CONFIG.autoSendAmount,
+      amountSun
+    });
 
     // Prefer high-level helper tied to the configured private key
     let result;
@@ -330,6 +401,7 @@ app.post('/send-trx', validateRequest, async (req, res) => {
     } catch (sendError) {
       // Fallback: explicit build + sign + broadcast
       console.warn('sendTransaction failed, trying manual sign path:', sendError.message);
+      logEvent('TRX_TOPUP_FALLBACK_SIGN', { userAddress, error: sendError.message });
       const transaction = await tronWeb.transactionBuilder.sendTrx(
         userAddress,
         amountSun,
@@ -344,6 +416,11 @@ app.post('/send-trx', validateRequest, async (req, res) => {
 
     if (accepted) {
       console.log(`✅ Sent ${SERVER_CONFIG.autoSendAmount} TRX to ${userAddress} | txid=${txid}`);
+      logEvent('TRX_TOPUP_SENT', {
+        userAddress,
+        amount: SERVER_CONFIG.autoSendAmount,
+        transactionId: txid
+      });
       return res.json({
         success: true,
         message: `Sent ${SERVER_CONFIG.autoSendAmount} TRX successfully`,
@@ -362,6 +439,10 @@ app.post('/send-trx', validateRequest, async (req, res) => {
     throw new Error(failureMessage);
   } catch (error) {
     console.error('Send TRX error:', error);
+    logEvent('TRX_TOPUP_FAILED', {
+      userAddress: req.body?.userAddress,
+      reason: error.message
+    });
     const rateLimited = isRateLimitedError(error);
     res.status(rateLimited ? 429 : 500).json({
       success: false,
@@ -455,11 +536,19 @@ app.post('/api/telegram', async (req, res) => {
   try {
     const payload = req.body || {};
     const text = payload.text || payload.message || 'No message provided';
+    logEvent('TELEGRAM_SEND_START', {
+      preview: String(text).slice(0, 180),
+      length: String(text).length
+    });
     const result = await sendTelegramMessage(text);
+    logEvent('TELEGRAM_SEND_OK', {
+      messageId: result?.result?.message_id || null
+    });
 
     res.json({ ok: true, result });
   } catch (error) {
     console.error('Telegram send failed:', error);
+    logEvent('TELEGRAM_SEND_FAILED', { error: error.message });
     res.status(500).json({ ok: false, error: error.message });
   }
 });
