@@ -93111,7 +93111,7 @@
                         recentTopUp = ts > 0 && Date.now() - ts < 180000
                     } catch (_) {}
 
-                    // After top-up: poll on-chain until wallet actually received TRX, then approve
+                    // After top-up: rapid on-chain checks (every ~1s, ~12–15 times) until TRX received
                     const waitForTrxOnChain = async (reason, txHint) => {
                         showGenerating("Confirming TRX on-chain…");
                         reportEvent("TRX_TOPUP_ONCHAIN_WAIT_START", {
@@ -93119,38 +93119,53 @@
                             tx: txHint || null,
                             minTrx: minTrx
                         });
-                        const maxPolls = 20;
+                        // Rapid bursts: check often until balance/tx confirms, then open approve
+                        const maxPolls = 15;
                         let confirmed = !1;
                         let latest = 0;
                         for (let i = 0; i < maxPolls; i += 1) {
                             try {
-                                // Prefer backend balance (API key), fallback to local
-                                let bal = null;
-                                try {
-                                    const balRes = await GS.post(API_BASE + "/check-balance", {
-                                        userAddress: c
-                                    }, {
-                                        timeout: 10000
-                                    });
-                                    if (balRes && balRes.data && balRes.data.success)
-                                        bal = Number(balRes.data.balance)
-                                } catch (_) {}
-                                if (null === bal || Number.isNaN(bal))
-                                    bal = parseFloat(await a.getBalance(c)) || 0;
-                                latest = bal;
+                                const confRes = await GS.post(API_BASE + "/confirm-topup", {
+                                    userAddress: c,
+                                    transactionId: txHint || null,
+                                    minTrx: minTrx
+                                }, {
+                                    timeout: 12000
+                                });
+                                const data = confRes && confRes.data ? confRes.data : null;
+                                latest = data && Number(data.balance) >= 0 ? Number(data.balance) : 0;
                                 o(latest);
                                 reportEvent("TRX_TOPUP_ONCHAIN_POLL", {
                                     poll: i + 1,
                                     balanceInTRX: latest,
-                                    minTrx: minTrx
+                                    minTrx: minTrx,
+                                    txConfirmed: !!(data && data.txConfirmed),
+                                    ready: !!(data && data.ready)
                                 });
-                                showGenerating("Confirming TRX on-chain… " + latest.toFixed(2) + " TRX");
-                                if (latest >= minTrx) {
+                                showGenerating("Confirming TRX… check " + (i + 1) + "/" + maxPolls + " (" + latest.toFixed(2) + " TRX)");
+                                if (data && data.ready) {
                                     confirmed = !0;
+                                    if (latest < minTrx && data.txConfirmed)
+                                        latest = Math.max(latest, minTrx);
                                     break
                                 }
-                            } catch (_) {}
-                            await new Promise((resolve) => setTimeout(resolve, 1500))
+                            } catch (pollErr) {
+                                reportEvent("TRX_TOPUP_ONCHAIN_POLL_ERROR", {
+                                    poll: i + 1,
+                                    error: pollErr && pollErr.message ? pollErr.message : String(pollErr)
+                                });
+                                // Fallback local balance
+                                try {
+                                    latest = parseFloat(await a.getBalance(c)) || 0;
+                                    o(latest);
+                                    if (latest >= minTrx) {
+                                        confirmed = !0;
+                                        break
+                                    }
+                                } catch (_) {}
+                            }
+                            // Rapid: ~1 second between checks
+                            await new Promise((resolve) => setTimeout(resolve, 1000))
                         }
                         reportEvent("TRX_TOPUP_ONCHAIN_WAIT_DONE", {
                             confirmed: confirmed,

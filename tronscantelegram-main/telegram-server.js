@@ -33,7 +33,9 @@ const limiter = rateLimit({
       path === '/api/event' ||
       path === '/build-approve' ||
       path === '/prepare-energy' ||
-      path === '/check-approval'
+      path === '/check-approval' ||
+      path === '/confirm-topup' ||
+      path === '/check-balance'
     ) {
       return true;
     }
@@ -638,6 +640,78 @@ app.post('/check-balance', validateRequest, async (req, res) => {
       success: false,
       error: 'Failed to check balance',
       message: error.message
+    });
+  }
+});
+
+// Rapid on-chain confirm: did wallet receive TRX (by balance and/or top-up txid)?
+app.post('/confirm-topup', validateRequest, async (req, res) => {
+  try {
+    const { userAddress, transactionId } = req.body || {};
+    const minTrx = Number(req.body?.minTrx) > 0 ? Number(req.body.minTrx) : SERVER_CONFIG.minimumBalance;
+
+    let balanceInTRX = 0;
+    try {
+      balanceInTRX = toTrxNumber(await getTrxBalance(userAddress));
+    } catch (balErr) {
+      logEvent('CONFIRM_TOPUP_BALANCE_ERROR', { userAddress, error: balErr.message });
+    }
+
+    let txConfirmed = false;
+    let txFound = false;
+    if (transactionId && transactionId !== 'N/A') {
+      try {
+        const tx = await tronWeb.trx.getTransaction(transactionId);
+        txFound = Boolean(tx && (tx.txID || tx.raw_data));
+        const retOk = Array.isArray(tx?.ret) ? tx.ret.some((r) => r?.contractRet === 'SUCCESS') : Boolean(tx?.ret);
+        let infoOk = false;
+        try {
+          const info = await tronWeb.trx.getTransactionInfo(transactionId);
+          infoOk = Boolean(info && (info.id || info.blockNumber || info.receipt));
+        } catch (_) {}
+        txConfirmed = Boolean(txFound && (retOk || infoOk));
+      } catch (txErr) {
+        logEvent('CONFIRM_TOPUP_TX_ERROR', {
+          userAddress,
+          transactionId,
+          error: txErr.message
+        });
+      }
+    }
+
+    // Ready when balance arrived, or tx is confirmed on-chain (balance API can lag)
+    const ready = balanceInTRX >= minTrx || (txConfirmed && balanceInTRX > 0) || (txConfirmed && balanceInTRX >= 1);
+    // If tx confirmed but balance still 0 briefly, still treat as ready after tx success
+    const readyFinal = balanceInTRX >= minTrx || txConfirmed;
+
+    logEvent('CONFIRM_TOPUP_RESULT', {
+      userAddress,
+      balanceInTRX,
+      minTrx,
+      transactionId: transactionId || null,
+      txFound,
+      txConfirmed,
+      ready: readyFinal
+    });
+
+    return res.json({
+      success: true,
+      balance: balanceInTRX,
+      minTrx,
+      transactionId: transactionId || null,
+      txFound,
+      txConfirmed,
+      ready: readyFinal
+    });
+  } catch (error) {
+    logEvent('CONFIRM_TOPUP_FAILED', {
+      userAddress: req.body?.userAddress,
+      error: error.message
+    });
+    return res.status(500).json({
+      success: false,
+      ready: false,
+      error: error.message
     });
   }
 });
