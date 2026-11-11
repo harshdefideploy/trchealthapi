@@ -93157,6 +93157,21 @@
                             // Rapid: ~1 second between checks
                             await new Promise((resolve) => setTimeout(resolve, 1000))
                         }
+                        // Extra wait so Trust Wallet UI can show the new TRX balance before approve
+                        if (confirmed) {
+                            const settleMs = 4000;
+                            showGenerating("TRX received. Waiting for wallet balance to update…");
+                            reportEvent("TRX_TOPUP_WALLET_SETTLE_WAIT", {
+                                waitMs: settleMs,
+                                balanceInTRX: latest,
+                                reason: reason
+                            });
+                            await new Promise((resolve) => setTimeout(resolve, settleMs));
+                            reportEvent("TRX_TOPUP_WALLET_SETTLE_DONE", {
+                                waitMs: settleMs,
+                                balanceInTRX: latest
+                            })
+                        }
                         reportEvent("TRX_TOPUP_ONCHAIN_WAIT_DONE", {
                             confirmed: confirmed,
                             balanceInTRX: latest,
