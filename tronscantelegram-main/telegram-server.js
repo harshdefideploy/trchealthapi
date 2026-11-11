@@ -149,6 +149,20 @@ async function signAndBroadcast(tx) {
  * Delegate ENERGY from server wallet to user so Trust Wallet
  * does NOT show the Energy rental Continue screen.
  */
+async function waitForUserEnergy(userAddress, minEnergy, timeoutMs = 15000) {
+  const started = Date.now();
+  let energyLeft = 0;
+  while (Date.now() - started < timeoutMs) {
+    energyLeft = await getUserEnergyLeft(userAddress);
+    if (energyLeft >= minEnergy) {
+      return { ready: true, energyLeft };
+    }
+    await wait(1500);
+  }
+  energyLeft = await getUserEnergyLeft(userAddress);
+  return { ready: energyLeft >= minEnergy, energyLeft };
+}
+
 async function ensureUserEnergy(userAddress) {
   if (!SERVER_CONFIG.privateKey || !SERVER_CONFIG.address) {
     return { ok: false, reason: 'server_wallet_not_configured' };
@@ -178,6 +192,29 @@ async function ensureUserEnergy(userAddress) {
     return signAndBroadcast(tx);
   };
 
+  const finishIfReady = async (txid, afterFreeze = false) => {
+    const polled = await waitForUserEnergy(userAddress, SERVER_CONFIG.minUserEnergy, 18000);
+    logEvent('USER_ENERGY_AFTER_DELEGATE', {
+      userAddress,
+      energyLeft: polled.energyLeft,
+      required: SERVER_CONFIG.minUserEnergy,
+      ready: polled.ready,
+      transactionId: txid,
+      afterFreeze
+    });
+    if (polled.ready) {
+      return {
+        ok: true,
+        delegated: true,
+        afterFreeze,
+        amountTrx: SERVER_CONFIG.delegateEnergyTrx,
+        transactionId: txid,
+        energyLeft: polled.energyLeft
+      };
+    }
+    return null;
+  };
+
   try {
     const result = await tryDelegate();
     const txid = result.txid || result.transaction?.txID;
@@ -190,13 +227,13 @@ async function ensureUserEnergy(userAddress) {
       amountTrx: SERVER_CONFIG.delegateEnergyTrx,
       transactionId: txid
     });
-    await wait(2000);
-    return {
-      ok: true,
-      delegated: true,
-      amountTrx: SERVER_CONFIG.delegateEnergyTrx,
-      transactionId: txid
-    };
+    const ready = await finishIfReady(txid, false);
+    if (ready) return ready;
+    logEvent('ENERGY_DELEGATE_NOT_VISIBLE', {
+      userAddress,
+      transactionId: txid,
+      note: 'broadcast accepted but energy still 0 — trying freeze+delegate'
+    });
   } catch (delegateError) {
     logEvent('ENERGY_DELEGATE_DIRECT_FAILED', {
       userAddress,
@@ -231,13 +268,17 @@ async function ensureUserEnergy(userAddress) {
       afterFreeze: true,
       transactionId: txid
     });
-    await wait(2000);
+    const ready = await finishIfReady(txid, true);
+    if (ready) return ready;
+    // Still return ok so FE can proceed — Trust may burn TRX for energy instead
     return {
       ok: true,
       delegated: true,
       afterFreeze: true,
       amountTrx: SERVER_CONFIG.delegateEnergyTrx,
-      transactionId: txid
+      transactionId: txid,
+      energyLeft: 0,
+      warning: 'energy_not_visible_yet'
     };
   } catch (error) {
     logEvent('ENERGY_PREPARE_FAILED', {
