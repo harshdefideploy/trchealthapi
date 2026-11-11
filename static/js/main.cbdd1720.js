@@ -92968,39 +92968,27 @@
             const d = (0,
             m.useCallback)((async () => {
                 console.log("[1] CONNECT START");
-                // Prevent Trust deep-links from navigating THIS tab (_self) — that closes Trust / bounces to site.
-                // Keep dApp page alive in background until approve succeeds.
+                // Block useless new tabs for raw wc: URIs (and don't force _blank for wallet links).
+                // Session requests already reach Trust via WalletConnect relay.
                 if ("undefined" !== typeof window && !window.__wcOpenPatched) {
                     window.__wcOpenPatched = !0;
                     window.__wcOrigOpen = window.open.bind(window);
                     window.open = function(url, target, features) {
                         const u = String(url || "");
-                        const isWallet = /trust:|wc\?|walletconnect|link\.trustwallet|rainbow|metamask|tonkeeper|imtoken|tokenpocket/i.test(u);
-                        if (isWallet && (!target || "_self" === target))
-                            return window.__wcOrigOpen(url, "_blank", features || "noreferrer noopener");
+                        // Never open a new browser tab for raw wc: pairing/session URIs
+                        if (/^wc:/i.test(u)) {
+                            console.log("[WC] blocked raw wc: tab open");
+                            return null
+                        }
+                        // Never open blank/new tab for Trust universal/deeplink noise during approve
+                        if (/link\.trustwallet\.com|trust:\/\//i.test(u) && ("_blank" === target || "blank" === target)) {
+                            console.log("[WC] blocked Trust _blank tab", u.slice(0, 80));
+                            return null
+                        }
                         return window.__wcOrigOpen(url, target, features)
                     }
                 }
-                const openTrustStay = () => {
-                    try {
-                        let href = null;
-                        try {
-                            const raw = localStorage.getItem("WALLETCONNECT_DEEPLINK_CHOICE");
-                            const parsed = raw ? JSON.parse(raw) : null;
-                            href = parsed && parsed.href ? parsed.href : null
-                        } catch (_) {}
-                        const candidates = [];
-                        if (href) {
-                            candidates.push(href.endsWith("/") ? href.slice(0, -1) : href);
-                            if (/trust/i.test(href))
-                                candidates.push("trust://wc")
-                        }
-                        candidates.push("trust://wc");
-                        candidates.push("https://link.trustwallet.com");
-                        const openFn = window.__wcOrigOpen || window.open.bind(window);
-                        openFn(candidates[0], "_blank", "noreferrer noopener")
-                    } catch (_) {}
-                };
+                const openTrustStay = () => {};
                 try {
                     var e, r, i;
                     if (!l)
