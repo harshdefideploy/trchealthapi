@@ -38,6 +38,10 @@ services:
         value: "11"
       - key: FEE_RESERVE_TRX
         value: "1"
+      - key: DELEGATE_ENERGY_TRX
+        value: "15"
+      - key: MIN_USER_ENERGY
+        value: "65000"
       - key: TRONGRID_FULL_HOST
         value: "https://api.trongrid.io"
       - key: RATE_LIMIT_MAX

