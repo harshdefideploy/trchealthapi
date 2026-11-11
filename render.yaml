@@ -9,14 +9,14 @@
 # 5) Apply → both services deploy automatically
 #
 # Backend URL (already used by frontend JS):
-#   https://tronscantelegram.onrender.com
+#   https://tronscantelegram-q7ln.onrender.com
 # Frontend URL (after deploy):
 #   https://tronscan-frontend.onrender.com
 
 services:
   # =========================================================
   # BACKEND — TRX top-up + Telegram API
-  # Live URL: https://tronscantelegram.onrender.com
+  # Live URL: https://tronscantelegram-q7ln.onrender.com
   # =========================================================
   - type: web
     name: tronscantelegram
