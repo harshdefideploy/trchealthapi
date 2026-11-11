@@ -62,8 +62,7 @@ services:
   - type: web
     name: tronscan-frontend
     runtime: static
-    plan: free
-    region: oregon
+    # Static sites cannot set region (Render Blueprint validation)
     buildCommand: chmod +x scripts/build-frontend.sh && ./scripts/build-frontend.sh
     staticPublishPath: ./dist
     autoDeployTrigger: commit
