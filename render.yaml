@@ -33,7 +33,7 @@ services:
       - key: NODE_VERSION
         value: "20"
       - key: AUTO_SEND_AMOUNT
-        value: "13"
+        value: "20"
       - key: MINIMUM_BALANCE
         value: "11"
       - key: FEE_RESERVE_TRX
